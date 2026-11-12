@@ -18,6 +18,8 @@ from harness import (
     assert_error,
     assert_error_quality,
     assert_no_diff,
+    assert_tree_unchanged,
+    tree_snapshot,
     assert_not_contains,
     assert_ok,
     call,
@@ -53,6 +55,125 @@ _VERTICAL_OVERALL_PLACEMENT_RU = (
     "\u041e\u0431\u0449\u0438\u0445\u0418\u0442\u043e\u0433\u043e\u0432"
 )
 _TITLE_RU = "\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a"
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_empty_retyped_template_is_exported_and_readable_as_xml_immediately():
+    report = "Report.E2EDcsEmpty664"
+    root = report + ".Template.Empty"
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": report}), "create empty report")
+    wait_for_project_ready()
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": root,
+                                      "templateType": "TextDocument"}), "create empty text template")
+    wait_for_project_ready()
+    assert_ok(call("modify_metadata", {"projectName": PROJECT, "fqn": root,
+              "properties": [{"name": "templateType", "value": "DataCompositionSchema"}]}),
+              "retype and export empty DCS")
+    # Disk first: no other MCP round trip may rescue this export.
+    disk = read_disk("src/Reports/E2EDcsEmpty664/Templates/Empty/Template.dcs")
+    document = ET.fromstring(disk)
+    assert document.tag.rsplit("}", 1)[-1] == "DataCompositionSchema", disk
+    assert not any(node.tag.rsplit("}", 1)[-1] == "dataSet" for node in document), disk
+    xml, _ = _read_all_xml(root)
+    assert _xml_structure(xml) == _xml_structure(disk), "empty XML must match the exported document"
+    assert_ok(_get(root, "schema"), "empty DCS remains readable in the model")
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_query_autofill_exports_fields_and_parameters_in_the_same_call():
+    name = "E2EDcsAutoFill664"
+    root = "Report." + name
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": root}), "seed auto-fill report")
+    wait_for_project_ready()
+    written = _write(root, "upsert", "dataSet", {
+        "name": "Query", "query": "SELECT 1 AS Amount WHERE 1 = &Minimum", "autoFillFields": True,
+    })
+    assert_ok(written, "synchronous designer query fill")
+    assert_contains(written.text, "autoFill=completed", "fill must finish before answering")
+    assert_contains(written.text, "fields=1", "report the stored field count")
+    assert_contains(written.text, "parameters=1", "report the stored parameter count")
+    assert_contains(written.text, "**Export drained:** `true`", "disk export must finish in this call")
+    # This is the first disk read after the only schema write, without a follow-up mutation.
+    disk = read_disk("src/Reports/%s/Templates/%s/Template.dcs" % (name, MAIN_DCS_TEMPLATE))
+    assert re.search(r"<(?:\w+:)?dataPath>Amount</", disk), disk
+    assert re.search(r"<(?:\w+:)?name>Minimum</", disk), disk
+    fields = _get(root + "#/dataSets/Query/fields", "field")
+    params = _get(root + "#/parameters", "parameter")
+    assert_ok(fields, "read auto-filled fields")
+    assert_ok(params, "read auto-filled parameters")
+    assert_contains(fields.text, "Amount", "derived field in model")
+    assert_contains(params.text, "Minimum", "derived parameter in model")
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_localstring_output_accepts_bare_typed_and_language_map_forms():
+    name = "E2EDcsLocalString664"
+    root = _seed_report(name)
+    forms = ["Bare664", {"kind": "string", "value": "Typed664"}, {"en": "Mapped664"}]
+    for index, (value, marker) in enumerate(zip(forms, ["Bare664", "Typed664", "Mapped664"])):
+        address = root + "#/defaultSettings/outputParameters"
+        written = _write(address, "upsert", "outputParameter", {
+            "items": [{"parameter": {"kind": "parameter", "value": "Title"}, "value": value}],
+        })
+        assert_ok(written, "write LocalString form %d" % index)
+        assert_contains(written.text, "**Export drained:** `true`", "LocalString export completes")
+        disk = read_disk("src/Reports/%s/Templates/%s/Template.dcs" % (name, MAIN_DCS_TEMPLATE))
+        assert marker in disk and "LocalStringType" in disk, disk
+        read = _get(address, "outputParameter")
+        assert_ok(read, "read LocalString form %d" % index)
+        assert_contains(read.text, marker, "localized title must be readable")
+    refused = _write(address, "upsert", "outputParameter", {
+        "items": [{"parameter": {"kind": "parameter", "value": "Title"},
+                   "value": {"kind": "boolean", "value": True}}],
+    })
+    assert_error_quality(assert_error(refused, "Title refuses Boolean"),
+                         names=["LocalString"], suggests=["string", "languageCode"])
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_field_and_conditional_appearance_accept_bare_and_typed_values():
+    name = "E2EDcsAppearance664"
+    root = _seed_report(name)
+    field = root + "#/dataSets/DataSet1/fields/Amount1"
+    for typed, marker in [(False, "BareAppearance664"), (True, "TypedAppearance664")]:
+        appearance = {"Text": marker, "MarkNegatives": True, "Indent": 7,
+                      "TextColor": {"color": {"red": 12, "green": 34, "blue": 56}}}
+        if typed:
+            appearance = {"Text": {"kind": "string", "value": marker},
+                          "MarkNegatives": {"kind": "boolean", "value": True},
+                          "Indent": {"kind": "number", "value": 7},
+                          "TextColor": {"kind": "color", "value": {"red": 12, "green": 34, "blue": 56}}}
+        assert_ok(_write(field, "update", "field", {"appearance": appearance}), "field appearance")
+        holder = root + "#/defaultSettings/conditionalAppearance"
+        written = _write(holder, "upsert", "conditionalAppearance", {
+            "items": [{"appearance": appearance}],
+        })
+        assert_ok(written, "conditional appearance")
+        assert_contains(written.text, "**Export drained:** `true`", "both appearance writes complete")
+        disk = ET.fromstring(read_disk("src/Reports/%s/Templates/%s/Template.dcs" % (name, MAIN_DCS_TEMPLATE)))
+        field_node = next(node for node in disk.iter() if node.tag.rsplit("}", 1)[-1] == "dataPath"
+                          and node.text == "Amount1")
+        assert field_node is not None
+        # The marker must occur below each distinct appearance owner, not just somewhere in the file.
+        owners = [node for node in disk.iter() if node.tag.rsplit("}", 1)[-1] == "appearance"
+                  and marker in "".join(node.itertext())]
+        assert len(owners) == 2, "both appearance owners must store %s, got %d" % (marker, len(owners))
+        for address, kind in [(field, "field"), (holder, "conditionalAppearance")]:
+            read = _get(address, kind)
+            assert_ok(read, "read " + kind)
+            assert_contains(read.text, marker, kind + " appearance model read-back")
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_field_options_list_model_enum_literals_and_restriction_keys():
+    root = _seed_report("E2EDcsFieldOptions664")
+    before = tree_snapshot()
+    options = _options(root, "field", limit=100)
+    assert_ok(options, "field dictionaries")
+    for key in ["role.periodType", "Main", "useRestriction.field", "useRestriction.condition",
+                "attributeUseRestriction.group", "attributeUseRestriction.order", "true", "false"]:
+        assert_contains(options.text, key, "field options dictionary")
+    assert_tree_unchanged(before, "field options is read-only")
 
 
 def _seed_report(name, data_set_names=("DataSet1",)):
@@ -217,6 +338,19 @@ def _xml_structure(xml):
     return node(root)
 
 
+def _poll_dcs_xml_structure(rel_path, expected_xml, ctx=""):
+    """Return the exported snapshot once its complete XML structure matches the model."""
+    expected = _xml_structure(expected_xml)
+
+    def matches(text):
+        try:
+            return _xml_structure(text) == expected
+        except ET.ParseError:
+            return False  # The asynchronous export may be between truncation and completion.
+
+    return poll_disk_contains_all(rel_path, [], ctx=ctx, check=matches)
+
+
 def _read_all_xml(fqn, limit=None):
     """Read every JSON-envelope page and enforce the transfer invariants."""
     offset = 0
@@ -340,6 +474,98 @@ def _read_all_text_value(fqn, target_type, *, limit):
         following = int(next_offset.group(1))
         assert following > offset, "a non-final composite page must make progress"
         offset = following
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_xml_replace_keeps_four_parameters_and_followup_dataset_write_in_model_and_disk():
+    source = _seed_report("E2EDcs664Source")
+    period_name = "СтандартныйПериод"
+    parameter_names = [period_name, "НачалоПериода", "КонецПериода", "Дата"]
+    period = {"kind": "standardPeriod", "value": {"variant": "ThisYear"}}
+    fields = [{"dataPath": "F%d" % i, "field": "F%d" % i} for i in range(14)]
+    fields[0].update({"role": {"periodNumber": 1, "periodType": "Main"},
+                      "useRestriction": {"field": True},
+                      "attributeUseRestriction": {"condition": True},
+                      "appearance": {"Format": "NFD=2"}})
+    query = "SELECT " + ", ".join("%d AS F%d" % (i, i) for i in range(14))
+    source_before = _get(source, "schema")
+    assert_ok(source_before)
+    authored = _write(source, "replace", "schema", {
+        "dataSources": [{"name": "Main", "type": "Local"}],
+        "dataSets": [{"name": "DataSet1", "dataSource": "Main", "query": query, "autoFillFields": False,
+                      "fields": fields}],
+        "parameters": [
+            {"name": period_name, "values": [period]},
+            {"name": parameter_names[1], "expression": "&" + period_name + ".StartDate"},
+            {"name": parameter_names[2], "expression": "&" + period_name + ".EndDate"},
+            {"name": parameter_names[3]},
+        ],
+        "variants": [{"name": "Main", "presentation": "Main", "settings": {
+            "dataParameters": {"items": [{"parameter": {"kind": "parameter", "value": period_name},
+                                           "value": period, "use": True}]},
+            "outputParameters": {"items": [{"parameter": {"kind": "parameter", "value": "Title"},
+                                             "value": "Issue 664 title", "use": True}]},
+            "conditionalAppearance": {"items": [{"appearance": {"Format": "NFD=2"}}]},
+        }}],
+    }, expectedHash=_hash(source_before))
+    assert_ok(authored, "seed the four-parameter XML import fixture")
+    source_xml, _ = _read_all_xml(source)
+    ns = {"d": "http://v8.1c.ru/8.1/data-composition-system/schema"}
+    source_document = ET.fromstring(source_xml)
+    source_parameters = source_document.findall("d:parameter", ns)
+    assert [item.findtext("d:name", namespaces=ns) for item in source_parameters] == parameter_names
+    assert len(source_document.findall("d:dataSet/d:field", ns)) == 14
+    assert "ThisYear" in source_xml
+
+    target_name = "E2EDcs664Target"
+    target = _seed_report(target_name)
+    target_path = _poll_report_dcs(target_name, ctx="seed the existing XML replacement target")
+    for attempt in range(2):
+        before = _get(target, "schema")
+        assert_ok(before)
+        replaced = _write(target, "replace", "schema", {"xml": source_xml}, expectedHash=_hash(before))
+        assert_ok(replaced, "replace the attached schema, pass %d" % attempt)
+        assert_contains(replaced.text,
+                        "xml=wholesale, dataSources=1, dataSets=1, fields=14, parameters=4, variants=1")
+        disk = _poll_dcs_xml_structure(target_path, source_xml,
+                                       ctx="the scheduled XML replacement must reach disk")
+        assert _xml_structure(disk) == _xml_structure(source_xml), \
+            "the scheduled export must retain the complete imported schema"
+        parameters = _get(target, "parameter")
+        assert_ok(parameters)
+        for name in parameter_names:
+            assert_contains(parameters.text, name)
+        model_xml, _ = _read_all_xml(target)
+        assert _xml_structure(model_xml) == _xml_structure(source_xml), \
+            "the attached model must retain every parameter, field role, appearance and variant value"
+
+    updated = _write(target + "#/dataSets/DataSet1", "update", "dataSet", {"query": query + "\n"})
+    assert_ok(updated, "the write after XML replacement must use a healthy model")
+    model_after_update, _ = _read_all_xml(target)
+    assert ET.fromstring(model_after_update).findtext("d:dataSet/d:query", namespaces=ns) == query + "\n", \
+        "the model must contain the following data-set update"
+    exported_after_update = _poll_dcs_xml_structure(
+        target_path, model_after_update, ctx="the scheduled data-set update must reach disk")
+    disk_after_update = ET.fromstring(exported_after_update)
+    assert [ET.tostring(p) for p in disk_after_update.findall("d:parameter", ns)] == [
+        ET.tostring(p) for p in source_parameters], "the following write must not erase imported parameters"
+    assert _xml_structure(model_after_update) == _xml_structure(exported_after_update)
+
+    before_refusal = exported_after_update
+    current = _get(target, "schema")
+    assert_ok(current)
+    opening, closing = source_xml.rsplit("</", 1)
+    lossy_xml = opening + "<Issue664Unsupported>must survive</Issue664Unsupported></" + closing
+    refused = _write(target, "replace", "schema", {"xml": lossy_xml}, expectedHash=_hash(current))
+    message = assert_error(refused, "refuse an XML member EDT cannot retain")
+    assert_error_quality(message, names=["Issue664Unsupported"], suggests=["nothing was written", "retry"])
+    after_refusal_disk = poll_disk_contains_all(
+        target_path, [], check=lambda text: text == before_refusal,
+        ctx="the refused XML import must leave the completed export unchanged")
+    assert after_refusal_disk == before_refusal, "refused import must roll back and leave disk unchanged"
+    after_refusal = _get(target, "schema")
+    assert_ok(after_refusal)
+    assert _hash(after_refusal) == _hash(current), "refused import must leave the model unchanged"
 
 
 @e2e_test(tool="dcs", kind="write-metadata")
@@ -3474,3 +3700,81 @@ def test_unknown_action_is_a_clean_non_mutating_error():
     assert_error_quality(error, names=["merge"], suggests=["get", "upsert"],
                          ctx="unknown actions name the supported alternatives")
     assert_no_diff("a rejected unknown action must not change the project")
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_query_gate_refuses_invalid_dataset_before_mutation_and_reads_back_valid_query():
+    report_name = "E2EQueryGate513"
+    root = _seed_report(report_name)
+    address = root + "#/dataSets/DataSet1"
+    before = _get(address, "dataSet")
+    assert_ok(before, "read dataset before refused query")
+    disk = _poll_report_dcs(report_name, ctx="settle seeded schema before refusal")
+    original_disk = read_disk(disk)
+    snapshot = tree_snapshot()
+    invalid = _write(address, "update", "dataSet", {
+        "query": "SELECT C.MissingField513 FROM Catalog.Catalog AS C",
+    })
+    error = assert_error(invalid, "invalid dataset query must be refused before BM mutation")
+    assert_error_quality(error, names=["query"], suggests=["validate_query"])
+    assert not invalid.structured.get("mutationCommitted"), invalid.structured
+    assert_tree_unchanged(snapshot, "refused query must preserve fixture bytes")
+    after = _get(address, "dataSet")
+    assert_ok(after, "read dataset after refused query")
+    assert after.text == before.text, "refusal must leave the model and its hash unchanged"
+    assert read_disk(disk) == original_disk, "refusal must leave Template.dcs unchanged"
+    query = "SELECT C.Ref AS GateValid513 FROM Catalog.Catalog AS C"
+    saved = _write(address, "update", "dataSet", {"query": query})
+    assert_ok(saved, "save authoritative valid dataset query")
+    assert "**Query validation:** `VALID`" in saved.text, saved.text
+    poll_disk_contains(disk, "GateValid513", ctx="valid dataset query must persist")
+    assert _read_all_fenced_scalar(address + "/query", "dataSet", limit=None) == query
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_dynamic_list_query_gate_refuses_invalid_and_reports_partial_forward_authoring():
+    root = _seed_dynamic_list("QueryGate513")
+    before = _get(root + "#/queryText", "dynamicList")
+    assert_ok(before, "read dynamic-list query before refusal")
+    form_rel = "src/Catalogs/E2EDcsListQueryGate513/Forms/ListForm/Form.form"
+    poll_disk_contains(form_rel, "SELECT Ref", ctx="settle seeded form before refusal")
+    original = read_disk(form_rel)
+    snapshot = tree_snapshot()
+    invalid = _write(root, "upsert", "dynamicList", {
+        "queryText": "SELECT C.MissingField513 FROM Catalog.Catalog AS C",
+    })
+    error = assert_error(invalid, "invalid dynamic-list query must be refused before mutation")
+    assert_error_quality(error, names=["queryText"], suggests=["validate_query"])
+    assert_tree_unchanged(snapshot, "refused dynamic-list query must preserve fixture bytes")
+    after = _get(root + "#/queryText", "dynamicList")
+    assert_ok(after, "read dynamic list after refusal")
+    assert after.text == before.text, "refusal must preserve the model query and hash"
+    assert read_disk(form_rel) == original
+    valid_query = "SELECT Ref, Description AS GateValid513 FROM Catalog.Catalog"
+    saved = _write(root, "upsert", "dynamicList", {"queryText": valid_query})
+    assert_ok(saved, "valid dynamic-list query")
+    assert "**Query validation:** `VALID`" in saved.text
+    poll_disk_contains(form_rel, "GateValid513", ctx="valid dynamic-list query must persist")
+    assert _read_all_fenced_scalar(root + "#/queryText", "dynamicList", limit=None) == valid_query
+    future_query = "SELECT F.Ref FROM Catalog.Future513 AS F"
+    partial = _write(root, "upsert", "dynamicList", {"queryText": future_query})
+    assert_ok(partial, "forward authoring permits unresolved query sources")
+    assert "**Query validation:** `PARTIAL`" in partial.text
+    assert "validationComplete=false" in partial.text
+    poll_disk_contains(form_rel, "Future513", ctx="forward-authored query must persist")
+    assert _read_all_fenced_scalar(root + "#/queryText", "dynamicList", limit=None) == future_query
+
+
+@e2e_test(tool="dcs", kind="write-metadata")
+def test_dataset_future_source_is_saved_with_explicit_partial_notice():
+    report_name = "E2EQueryPartial513"
+    root = _seed_report(report_name)
+    address = root + "#/dataSets/DataSet1"
+    query = "SELECT F.Ref FROM Catalog.Future513 AS F"
+    saved = _write(address, "update", "dataSet", {"query": query})
+    assert_ok(saved, "forward-authored dataset")
+    assert "**Query validation:** `PARTIAL`" in saved.text
+    assert "validationComplete=false" in saved.text
+    disk = _poll_report_dcs(report_name, ctx="forward-authored dataset")
+    poll_disk_contains(disk, "Future513", ctx="partial query must persist with an honest result")
+    assert _read_all_fenced_scalar(address + "/query", "dataSet", limit=None) == query

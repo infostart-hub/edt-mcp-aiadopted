@@ -65,6 +65,125 @@ public class ProjectStateCheckerTest
 {
     private static final long SETTLE_TIMEOUT_MS = 5_000L;
 
+    private static final class LifecycleFixture
+    {
+        final IProject project = mockOpenProject("ExternalObjects"); //$NON-NLS-1$
+        final com._1c.g5.v8.dt.core.platform.IDtProject dt = mock(com._1c.g5.v8.dt.core.platform.IDtProject.class);
+        final com._1c.g5.v8.dt.core.platform.IV8Project v8 = mock(com._1c.g5.v8.dt.core.platform.IV8Project.class);
+        final com._1c.g5.v8.dt.core.platform.IDtProjectManager dtManager = mock(com._1c.g5.v8.dt.core.platform.IDtProjectManager.class);
+        final com._1c.g5.v8.dt.core.platform.IV8ProjectManager v8Manager = mock(com._1c.g5.v8.dt.core.platform.IV8ProjectManager.class);
+        final IBmModelManager modelManager = mock(IBmModelManager.class);
+        final com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider ddProvider = mock(com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider.class);
+        final IDerivedDataManager dd = mock(IDerivedDataManager.class);
+        final IBmModel model = mock(IBmModel.class);
+
+        LifecycleFixture()
+        {
+            when(dtManager.getDtProject(project)).thenReturn(dt);
+            when(v8Manager.getProject(project)).thenReturn(v8);
+            when(v8.getDtProject()).thenReturn(dt);
+            when(v8Manager.isServiceContextActive(v8)).thenReturn(true);
+            when(modelManager.getModel(dt)).thenReturn(model);
+            when(ddProvider.get(dt)).thenReturn(dd);
+            when(dd.isIdle()).thenReturn(true);
+            when(dd.isAllComputed()).thenReturn(true);
+        }
+
+        ProjectStateResult check()
+        {
+            return ProjectStateChecker.checkProjectState(project, dtManager, v8Manager,
+                modelManager, ddProvider);
+        }
+    }
+
+    @Test
+    public void readyDerivedDataDoesNotCertifyAnInactiveServiceContext()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.v8Manager.isServiceContextActive(f.v8)).thenReturn(false);
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void readyDerivedDataDoesNotCertifyAMissingBmModel()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.modelManager.getModel(f.dt)).thenReturn(null);
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void aModelReplacementDuringTheDerivedDataProbeIsNotReady()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.dd.isAllComputed()).thenAnswer(invocation -> {
+            when(f.modelManager.getModel(f.dt)).thenReturn(mock(IBmModel.class));
+            return true;
+        });
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void serviceDeactivationDuringTheDerivedDataProbeIsNotReady()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.dd.isAllComputed()).thenAnswer(invocation -> {
+            when(f.v8Manager.isServiceContextActive(f.v8)).thenReturn(false);
+            return true;
+        });
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void aDtReplacementDuringTheDerivedDataProbeIsNotReady()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.dd.isAllComputed()).thenAnswer(invocation -> {
+            when(f.dtManager.getDtProject(f.project)).thenReturn(
+                mock(com._1c.g5.v8.dt.core.platform.IDtProject.class));
+            return true;
+        });
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void aV8ReplacementDuringTheDerivedDataProbeIsNotReady()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.dd.isAllComputed()).thenAnswer(invocation -> {
+            when(f.v8Manager.getProject(f.project)).thenReturn(
+                mock(com._1c.g5.v8.dt.core.platform.IV8Project.class));
+            return true;
+        });
+        assertFalse(f.check().isReady());
+    }
+
+    @Test
+    public void stableActiveContextModelAndDerivedDataAreReady()
+    {
+        assertEquals(ProjectState.READY, new LifecycleFixture().check().getState());
+    }
+
+    @Test
+    public void missingLifecycleServicesCannotCertifyReady()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        assertEquals(ProjectState.UNKNOWN, ProjectStateChecker.checkProjectState(f.project,
+            f.dtManager, null, f.modelManager, f.ddProvider).getState());
+        assertEquals(ProjectState.UNKNOWN, ProjectStateChecker.checkProjectState(f.project,
+            f.dtManager, f.v8Manager, null, f.ddProvider).getState());
+    }
+
+    @Test
+    public void anUnregisteredDtCannotBeReplacedByAStaleV8Handle()
+    {
+        LifecycleFixture f = new LifecycleFixture();
+        when(f.dtManager.getDtProject(f.project)).thenReturn(null);
+        assertFalse(f.check().isReady());
+        verify(f.ddProvider, never()).get(any(com._1c.g5.v8.dt.core.platform.IDtProject.class));
+    }
+
+
     @Test
     public void buildingErrorOrNullIsNullForNullName()
     {

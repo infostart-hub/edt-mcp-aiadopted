@@ -47,6 +47,82 @@ import org.junit.Test;
  */
 public class FormStructureReaderTest
 {
+    @Test
+    public void testRenderCanonicalFormHeaders()
+    {
+        var form = com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE.createForm();
+        for (String[] address : new String[][] {
+            { "Catalog.Products.forms.ItemForm", "Catalog.Products.Form.ItemForm" },
+            { "Catalogs.Products.Forms.ItemForm", "Catalog.Products.Form.ItemForm" },
+            { "Справочник.Товары.Форма.ФормаЭлемента", "Catalog.Товары.Form.ФормаЭлемента" },
+            { "CommonForm.Picker", "CommonForm.Picker" },
+            { "ОбщаяФорма.Выбор", "CommonForm.Выбор" }
+        })
+        {
+            String heading = "# Form Structure: " + address[1] + "\n\n";
+            assertTrue(address[0], FormStructureReader.render(address[0], form, "en").startsWith(heading));
+            assertTrue(address[0], FormStructureReader.render(address[0], form, "ru", 1).startsWith(heading));
+        }
+    }
+
+    @Test
+    public void testCommandCellIsCappedButRefusalKeepsAllHandlers()
+    {
+        var factory = com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE;
+        var form = factory.createForm();
+        var command = factory.createFormCommand();
+        command.setName("Print");
+        var action = factory.createFormExtensionCommandHandlerContainer();
+        for (int i = 1; i <= 13; i++)
+        {
+            var handler = factory.createCommandHandlerExtension();
+            handler.setName("Handler" + i);
+            action.getHandlers().add(handler);
+        }
+        command.setAction(action);
+        form.getFormCommands().add(command);
+        String md = FormStructureReader.render("CommonForm.F", form, "en");
+        String commands = md.substring(md.indexOf("## Commands"), md.indexOf("## Event handlers"));
+        assertTrue(commands.contains("Handler10 \u2026 (+3 more)"));
+        assertFalse(commands.contains("Handler11"));
+        assertTrue(FormStructureReader.actionHandlerOf(command).endsWith("Handler12, Handler13"));
+    }
+
+    @Test
+    public void testTypeCellsAreCappedInAllThreeTables()
+    {
+        var factory = com._1c.g5.v8.dt.form.model.FormFactory.eINSTANCE;
+        var form = factory.createForm();
+        var attribute = factory.createFormAttribute();
+        attribute.setName("Values");
+        attribute.setValueType(manyTypes());
+        var column = factory.createFormAttributeColumn();
+        column.setName("Column");
+        column.setValueType(manyTypes());
+        attribute.getColumns().add(column);
+        form.getAttributes().add(attribute);
+        var parameter = factory.createFormParameter();
+        parameter.setName("Input");
+        parameter.setValueType(manyTypes());
+        form.getParameters().add(parameter);
+        String md = FormStructureReader.render("CommonForm.F", form, "en");
+        assertEquals(3, md.split("\\QType10 \u2026 (+3 more)\\E", -1).length - 1);
+        assertFalse(md.contains("Type11"));
+    }
+
+    private static com._1c.g5.v8.dt.mcore.TypeDescription manyTypes()
+    {
+        var factory = com._1c.g5.v8.dt.mcore.McoreFactory.eINSTANCE;
+        var description = factory.createTypeDescription();
+        for (int i = 1; i <= 13; i++)
+        {
+            var type = factory.createType();
+            type.setName("Type" + i);
+            description.getTypes().add(type);
+        }
+        return description;
+    }
+
     // ==================== resolveMdForm: pure FQN parsing (null config tolerated) ====================
 
     @Test
@@ -195,7 +271,7 @@ public class FormStructureReaderTest
 
         String md = FormStructureReader.render("Catalog.Products.Forms.ItemForm", form, "en"); //$NON-NLS-1$ //$NON-NLS-2$
 
-        assertTrue(md.startsWith("# Form Structure: Catalog.Products.Forms.ItemForm")); //$NON-NLS-1$
+        assertTrue(md.startsWith("# Form Structure: Catalog.Products.Form.ItemForm")); //$NON-NLS-1$
         assertTrue(md.contains("## Items")); //$NON-NLS-1$
         assertTrue(md.contains("- MainGroup (type: FormGroup, id: 1)")); //$NON-NLS-1$
         // The child field is indented one level under its container.

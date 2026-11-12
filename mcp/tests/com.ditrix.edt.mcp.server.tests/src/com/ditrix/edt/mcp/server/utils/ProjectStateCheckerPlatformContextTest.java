@@ -24,6 +24,10 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import com._1c.g5.v8.bm.integration.IBmModel;
+import com._1c.g5.v8.dt.core.platform.IBmModelManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
+import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
 import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider;
@@ -65,6 +69,20 @@ public class ProjectStateCheckerPlatformContextTest
             "com._1c.g5.v8.dt.core.V8ConfigurationNature" });
     }
 
+    private void registerActiveModel(IDtProject dtProject)
+    {
+        when(manager.getDtProject(project)).thenReturn(dtProject);
+        IV8ProjectManager v8Manager = mock(IV8ProjectManager.class);
+        IV8Project v8Project = mock(IV8Project.class);
+        IBmModelManager bmManager = mock(IBmModelManager.class);
+        when(activator.getV8ProjectManager()).thenReturn(v8Manager);
+        when(activator.getBmModelManager()).thenReturn(bmManager);
+        when(v8Manager.getProject(project)).thenReturn(v8Project);
+        when(v8Project.getDtProject()).thenReturn(dtProject);
+        when(v8Manager.isServiceContextActive(v8Project)).thenReturn(true);
+        when(bmManager.getModel(dtProject)).thenReturn(mock(IBmModel.class));
+    }
+
     @After
     public void tearDown() throws Exception
     {
@@ -82,7 +100,8 @@ public class ProjectStateCheckerPlatformContextTest
     @Test
     public void theAdapterJudgesAStartingContextByItsDerivedDataAndNamesTheContext()
     {
-        when(manager.getDtProject(project)).thenReturn(mock(IDtProject.class));
+        registerActiveModel(mock(IDtProject.class));
+        when(activator.getDerivedDataManagerProvider()).thenReturn(mock(IDerivedDataManagerProvider.class));
         when(orchestrator.isStarted(project)).thenReturn(false);
         ProjectStateChecker.ProjectStateResult result = ProjectStateChecker.checkProjectState(project);
         assertEquals(NotReadyReason.CONTEXT_STARTING, result.getReason());
@@ -95,7 +114,7 @@ public class ProjectStateCheckerPlatformContextTest
     public void theAdapterDoesNotAskTheOrchestratorAboutAReadyVerdict()
     {
         IDtProject dtProject = mock(IDtProject.class);
-        when(manager.getDtProject(project)).thenReturn(dtProject);
+        registerActiveModel(dtProject);
         IDerivedDataManagerProvider provider = mock(IDerivedDataManagerProvider.class);
         IDerivedDataManager derivedData = mock(IDerivedDataManager.class);
         when(activator.getDerivedDataManagerProvider()).thenReturn(provider);
@@ -104,6 +123,23 @@ public class ProjectStateCheckerPlatformContextTest
         when(derivedData.isAllComputed()).thenReturn(true);
         assertEquals(NotReadyReason.NONE, ProjectStateChecker.checkProjectState(project).getReason());
         verifyZeroInteractions(orchestrator);
+    }
+
+    @Test
+    public void readyDerivedDataCannotBypassThePublicAdaptersBmModelCheck()
+    {
+        IDtProject dtProject = mock(IDtProject.class);
+        registerActiveModel(dtProject);
+        IDerivedDataManagerProvider provider = mock(IDerivedDataManagerProvider.class);
+        IDerivedDataManager derivedData = mock(IDerivedDataManager.class);
+        when(activator.getDerivedDataManagerProvider()).thenReturn(provider);
+        when(provider.get(dtProject)).thenReturn(derivedData);
+        when(derivedData.isIdle()).thenReturn(true);
+        when(derivedData.isAllComputed()).thenReturn(true);
+        assertTrue(ProjectStateChecker.checkProjectState(project).isReady());
+
+        when(activator.getBmModelManager().getModel(dtProject)).thenReturn(null);
+        org.junit.Assert.assertFalse(ProjectStateChecker.checkProjectState(project).isReady());
     }
 
     @Test

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MCP Server for EDT
  * Copyright (C) 2025 DitriX (https://github.com/DitriXNew)
  * Licensed under AGPL-3.0-or-later
@@ -13,10 +13,15 @@ import com.ditrix.edt.mcp.server.utils.privacy.PiiRuleCodec;
  */
 public final class PreferenceConstants
 {
+    /** Explicit opt-in for MCP calls that open editors in the EDT workbench. */
+    public static final String PREF_ALLOW_UI_NAVIGATION = "mcpAllowUiNavigation";
+    public static final boolean DEFAULT_ALLOW_UI_NAVIGATION = false;
+
     /** MCP server port */
     public static final String PREF_PORT = "mcpServerPort"; //$NON-NLS-1$
     
     /** Auto-start on EDT startup */
+    public static final String PREF_HTTP_ENABLED = "mcpServerHttpEnabled"; //$NON-NLS-1$
     public static final String PREF_AUTO_START = "mcpServerAutoStart"; //$NON-NLS-1$
     
     /** Path to check descriptions folder */
@@ -34,13 +39,14 @@ public final class PreferenceConstants
     public static final String UPDATE_CHECK_DAILY     = "daily"; //$NON-NLS-1$
     public static final String UPDATE_CHECK_NEVER     = "never"; //$NON-NLS-1$
 
-    /** Default update check interval */
-    public static final String DEFAULT_UPDATE_CHECK_INTERVAL = UPDATE_CHECK_ON_STARTUP;
+    /** Pinned installations keep qualified components; independent update checks require explicit opt-in. */
+    public static final String DEFAULT_UPDATE_CHECK_INTERVAL = UPDATE_CHECK_NEVER;
     
     /** Default port */
     public static final int DEFAULT_PORT = 8765;
     
     /** Default auto-start */
+    public static final boolean DEFAULT_HTTP_ENABLED = true;
     public static final boolean DEFAULT_AUTO_START = false;
     
     /** Default checks folder (empty - the descriptions shipped in the plugin are used) */
@@ -115,8 +121,13 @@ public final class PreferenceConstants
      * 15 = every stored list gains the now-default-disabled {@code get_form_screenshot}.
      * 16 = recorded read-only presets gain the destructive {@code business_process_route_map}.
      * 17 = a stored read-only profile gains {@code project_checks}.
+     * 18 = recorded read-only profiles gain {@code infobase_extensions}.
+     * 19 = a stored Analysis Only profile gains {@code open_editor}.
+     * 20 = recorded read-only profiles gain {@code clone_metadata_object}.
+     * 21 = recorded read-only profiles gain {@code sort_metadata}.
+     * 22 = recorded read-only profiles gain {@code edt_dialog}.
      */
-    public static final int TOOL_PREFS_MIGRATION_VERSION = 17;
+    public static final int TOOL_PREFS_MIGRATION_VERSION = 22;
 
     /** Explicit opt-ins: raw git commands, the external Workmate agent and buffered form screenshots. */
     public static final String DEFAULT_DISABLED_TOOLS = "git,ask_workmate,get_form_screenshot"; //$NON-NLS-1$

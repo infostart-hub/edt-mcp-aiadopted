@@ -311,13 +311,15 @@ def test_show_element_switches_the_page_and_puts_the_editor_back():
           - showElement=PageExtra differs from the baseline (a no-op switch fails here);
           - showElement=extrapagelabel (an element ON that page, case-insensitive)
             gives the same image as the page itself: same page, frame cleared both times;
-          - the capture afterwards no longer shows PageExtra (a missing restore fails).
+          - the capture afterwards equals the opening-page baseline (stuck, blank, or
+            a third page all fail).
 
     Limit: no MCP tool can put a live editor on a user-clicked tab, so the editor here
     starts on its default page, and this test cannot tell a restore of the user's tab
     from a plain default-page render. The restore is best effort by EDT's design (it
-    re-selects the editor's last selection; other Pages groups return to their default
-    pages); FormPageSwitchTest pins its render sequence, not native pixels."""
+    restores defaults only for affected Pages groups, then re-selects the editor's last
+    selection; unrelated groups keep their pages). FormPageSwitchTest verifies native
+    page-state semantics without pixels; this test verifies the actual image."""
     mode = native_form_layout_render_mode()
     if mode == "off":
         r = call("get_form_screenshot", {
@@ -356,6 +358,7 @@ def test_show_element_switches_the_page_and_puts_the_editor_back():
         "an element on PageExtra must give the same image as the page itself (same page, "
         "no selection frame); they differ")
     assert after != page, "after showElement the editor still shows PageExtra: it was not put back"
+    assert after == baseline, "after showElement the editor did not return to its original page image"
     assert_no_diff("a screenshot read must not touch the project on disk")
 
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MCP Server for EDT - Tests
  * Copyright (C) 2025 DitriX (https://github.com/DitriXNew)
  * Licensed under AGPL-3.0-or-later
@@ -264,6 +264,26 @@ public class ImportConfigurationFromXmlToolTest
 
         assertTrue("no start may be issued for an already-started project, got " //$NON-NLS-1$
             + lifecycle.calls, lifecycle.startRequests.isEmpty());
+    }
+
+    @Test
+    public void testStartedContextWithBuildingModelDoesNotReportReady()
+    {
+        RecordingLifecycle lifecycle = new RecordingLifecycle();
+        lifecycle.started = true;
+        lifecycle.modelReady = false;
+        StartOutcome outcome = ImportConfigurationFromXmlTool.startImportedProject(
+            projectHandle(), "Imported", lifecycle, SHORT_START_BUDGET_MS); //$NON-NLS-1$
+
+        assertEquals("an unbuilt model must not be reported ready", //$NON-NLS-1$
+            StartPhase.START_ISSUED, outcome.phase);
+        String answer = ImportConfigurationFromXmlTool.renderImportAnswer("Imported", //$NON-NLS-1$
+            java.nio.file.Paths.get("C:/dump"), false, outcome, SHORT_START_BUDGET_MS); //$NON-NLS-1$
+        assertTrue("the response must retain the pending state: " + answer, //$NON-NLS-1$
+            answer.contains("state: importing")); //$NON-NLS-1$
+        assertTrue("the response must refuse model readiness: " + answer, //$NON-NLS-1$
+            answer.contains("projectReady: false")); //$NON-NLS-1$
+        assertTrue("a started project must not be restarted", lifecycle.startRequests.isEmpty()); //$NON-NLS-1$
     }
 
     @Test
@@ -1032,8 +1052,10 @@ public class ImportConfigurationFromXmlToolTest
         assertTrue("front matter must carry projectReady: true: " + answer, //$NON-NLS-1$
             answer.contains("projectReady: true")); //$NON-NLS-1$
         assertTrue("the body must say EDT started the project: " + answer, //$NON-NLS-1$
-            answer.contains("- Project state: EDT has started this project.")); //$NON-NLS-1$
-        assertTrue("and warn that list_projects can still say 'building': " + answer, //$NON-NLS-1$
+            answer.contains("- Project state: EDT has started this project and finished computing")); //$NON-NLS-1$
+        assertTrue("the body must confirm model readiness: " + answer, //$NON-NLS-1$
+            answer.contains("The project reports `ready` in `list_projects`")); //$NON-NLS-1$
+        assertFalse("ready must not promise a pending model: " + answer, //$NON-NLS-1$
             answer.contains("may still report it `building`")); //$NON-NLS-1$
         assertFalse("a ready project must not be described as still importing: " + answer, //$NON-NLS-1$
             answer.contains("importing")); //$NON-NLS-1$
@@ -1485,11 +1507,13 @@ public class ImportConfigurationFromXmlToolTest
     }
 
     @Test
-    public void testGuideWarnsThatReadyCanStillReadAsBuilding()
+    public void testGuideRequiresTheSameModelReadinessAsListProjects()
     {
         String guide = new ImportConfigurationFromXmlTool().getGuide();
-        assertTrue("the guide must separate 'context started' from 'indexed': " + guide, //$NON-NLS-1$
-            guide.contains("is about the CONTEXT, not about indexing")); //$NON-NLS-1$
+        assertTrue("the guide must require actual model readiness: " + guide, //$NON-NLS-1$
+            guide.contains("uses the same model-readiness check as `list_projects`")); //$NON-NLS-1$
+        assertTrue("pending derived data must remain importing: " + guide, //$NON-NLS-1$
+            guide.contains("pending derived data is still `state: importing`")); //$NON-NLS-1$
     }
 
     @Test
@@ -1700,6 +1724,7 @@ public class ImportConfigurationFromXmlToolTest
         volatile boolean started;
         volatile boolean startsOnRequest;
         volatile boolean dtProject = true;
+        volatile boolean modelReady = true;
         volatile RuntimeException startFailure;
 
         /** Thrown by {@code permitImport}, after the call has been recorded. */
@@ -1908,6 +1933,12 @@ public class ImportConfigurationFromXmlToolTest
             }
             started = startsOnRequest;
             startIssued.countDown();
+        }
+
+        @Override
+        public boolean isModelReady(IProject project)
+        {
+            return modelReady;
         }
 
         @Override

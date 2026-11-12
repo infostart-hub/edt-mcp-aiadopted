@@ -15,24 +15,28 @@ import static org.junit.Assert.assertTrue;
 import java.util.HashMap;
 
 import org.junit.Test;
+import org.eclipse.core.resources.ResourcesPlugin;
 
 import com.ditrix.edt.mcp.server.tools.IMcpTool.ResponseType;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Tests for {@link ListProjectsTool}.
- * <p>
- * Takes no parameters and {@code execute()} goes straight to the live
- * {@code ResourcesPlugin.getWorkspace()} workspace (the EDT boundary), so there
- * is no argument-validation branch and no pure static helper that can run
- * headlessly: both {@code listProjects()} and {@code readEdtStatusAndNatures}
- * read the live workspace / construct against {@code IProject}. The
- * unit-testable surface is therefore the static metadata contract (the tool uses
- * the {@code IMcpTool} default MARKDOWN response type and, being a content tool,
- * declares no structured output schema); the project list is covered by the E2E
- * suite — execute() is deliberately NOT called here.
+ * Checks the schema contract and the workspace identity in the headless Eclipse workspace.
  */
 public class ListProjectsToolTest
 {
+    @Test
+    public void testMachineListReportsActualWorkspaceEvenWithoutProjects()
+    {
+        JsonObject result = JsonParser.parseString(ListProjectsTool.listProjectsJson()).getAsJsonObject();
+        assertTrue(result.toString(), result.get("success").getAsBoolean());
+        assertEquals(ResourcesPlugin.getWorkspace().getRoot().getLocation().toOSString(),
+            result.get("workspacePath").getAsString());
+        assertTrue(result.get("projects").isJsonArray());
+    }
+
     @Test
     public void testName()
     {
@@ -97,6 +101,56 @@ public class ListProjectsToolTest
         // No override: the IMcpTool default derives the file name from the tool name.
         assertEquals("list_projects.md", //$NON-NLS-1$
             new ListProjectsTool().getResultFileName(new HashMap<>()));
+    }
+
+    @Test
+    public void testExternalObjectsAreEdtProjectsBeforeTheirModelStarts() throws Exception
+    {
+        assertEdtNature("com._1c.g5.v8.dt.core.V8ExternalObjectsNature", "Yes"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void testConfigurationAndExtensionNaturesRemainEdtProjects() throws Exception
+    {
+        assertEdtNature("com._1c.g5.v8.dt.core.V8ConfigurationNature", "Yes"); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEdtNature("com._1c.g5.v8.dt.core.V8ExtensionNature", "Yes"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void testOrdinaryWorkspaceContainersAreNotEdtProjects() throws Exception
+    {
+        assertEdtNature("org.eclipse.wst.server.core.servers", "No"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static void assertEdtNature(String nature, String expected) throws Exception
+    {
+        org.eclipse.core.resources.IProjectDescription description =
+            (org.eclipse.core.resources.IProjectDescription)java.lang.reflect.Proxy.newProxyInstance(
+                org.eclipse.core.resources.IProjectDescription.class.getClassLoader(),
+                new Class<?>[] { org.eclipse.core.resources.IProjectDescription.class },
+                (proxy, method, args) -> "getNatureIds".equals(method.getName()) //$NON-NLS-1$
+                    ? new String[] { nature } : null);
+        org.eclipse.core.resources.IProject project =
+            (org.eclipse.core.resources.IProject)java.lang.reflect.Proxy.newProxyInstance(
+                org.eclipse.core.resources.IProject.class.getClassLoader(),
+                new Class<?>[] { org.eclipse.core.resources.IProject.class },
+                (proxy, method, args) -> {
+                    if ("hasNature".equals(method.getName())) //$NON-NLS-1$
+                    {
+                        return nature.equals(args[0]);
+                    }
+                    if ("getDescription".equals(method.getName())) //$NON-NLS-1$
+                    {
+                        return description;
+                    }
+                    return null;
+                });
+        java.lang.reflect.Method reader = ListProjectsTool.class.getDeclaredMethod(
+            "readEdtStatusAndNatures", org.eclipse.core.resources.IProject.class); //$NON-NLS-1$
+        reader.setAccessible(true);
+        String[] row = (String[])reader.invoke(null, project);
+        assertEquals(expected, row[0]);
+        assertTrue(row[1].contains(nature.substring(nature.lastIndexOf('.') + 1)));
     }
 
     // ==================== the 'format' parameter (issue #302) ====================

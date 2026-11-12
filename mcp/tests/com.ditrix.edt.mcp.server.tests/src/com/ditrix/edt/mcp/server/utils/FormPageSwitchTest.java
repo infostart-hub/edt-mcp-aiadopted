@@ -15,7 +15,10 @@ import static org.junit.Assert.assertTrue;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
+import org.eclipse.emf.ecore.EObject;
 import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.jface.viewers.StructuredSelection;
 import org.junit.Test;
@@ -24,6 +27,7 @@ import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.FormGroup;
+import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.ManagedFormGroupType;
 
 /**
@@ -37,6 +41,8 @@ public class FormPageSwitchTest
 {
     private static final int SHORT_TIMEOUT_MS = 400;
     private static final int PAGE_ID = 7;
+    private static final int PAGES_ID = 2;
+    private static final int DEFAULT_PAGE_ID = 3;
 
     /** Stand-in for {@code CommandInterfaceMapping}. */
     public static final class FakeMapping
@@ -94,7 +100,7 @@ public class FormPageSwitchTest
     private static final class FakeEditor
     {
         @SuppressWarnings("unused") // read reflectively
-        final Object form = new Object();
+        final Form form = formWithPages();
         final FakeController controller = new FakeController();
         Object hippoSession = new Object();
         @SuppressWarnings("unused") // read reflectively (FormPageSwitch.selectedIds)
@@ -102,6 +108,43 @@ public class FormPageSwitchTest
         final List<String> renders = new ArrayList<>();
         int throwOnRender = -1;
         FakeRenderService renderService = new FakeRenderService();
+        // The native renderer retains page state on NONE/update, including a full render.
+        final Map<Integer, Integer> currentPages = new LinkedHashMap<>();
+        int[] selectionFrame = new int[0];
+
+        FakeEditor()
+        {
+            currentPages.put(PAGES_ID, DEFAULT_PAGE_ID);
+        }
+
+        private void applySelection(int[] ids)
+        {
+            if (ids == null)
+            {
+                return;
+            }
+            selectionFrame = ids.clone();
+            for (int id : ids)
+            {
+                for (EObject item : PersistedContents.descendants(form))
+                {
+                    if (!(item instanceof FormItem formItem) || formItem.getId() != id)
+                    {
+                        continue;
+                    }
+                    EObject page = item;
+                    for (EObject parent = page.eContainer(); parent != null; parent = page.eContainer())
+                    {
+                        if (parent instanceof FormGroup group && group.getType() == ManagedFormGroupType.PAGES)
+                        {
+                            currentPages.put(group.getId(), ((FormItem)page).getId());
+                        }
+                        page = parent;
+                    }
+                    break;
+                }
+            }
+        }
 
         @SuppressWarnings("unused") // invoked reflectively (the synchronous render body)
         private void rebuildInternal(Object renderedForm, FakeMapping mapping, FakeEvent event, boolean updateOnly)
@@ -117,6 +160,7 @@ public class FormPageSwitchTest
             {
                 throw new IllegalStateException("render failed"); //$NON-NLS-1$
             }
+            applySelection(event.selectedIds);
             hippoSession = new Object();
         }
 
@@ -124,6 +168,107 @@ public class FormPageSwitchTest
         {
             rebuildInternal(form, new FakeMapping(), FakeEvent.buildUpdateEvent(), false);
         }
+    }
+
+    private static FormGroup page(int id, String name)
+    {
+        FormGroup page = FormFactory.eINSTANCE.createFormGroup();
+        page.setId(id);
+        page.setName(name);
+        page.setType(ManagedFormGroupType.PAGE);
+        return page;
+    }
+
+    private static Form formWithPages()
+    {
+        Form form = FormFactory.eINSTANCE.createForm();
+        FormGroup pages = FormFactory.eINSTANCE.createFormGroup();
+        pages.setId(PAGES_ID);
+        pages.setName("Pages"); //$NON-NLS-1$
+        pages.setType(ManagedFormGroupType.PAGES);
+        pages.getItems().add(page(DEFAULT_PAGE_ID, "PageMain")); //$NON-NLS-1$
+        pages.getItems().add(page(PAGE_ID, "PageExtra")); //$NON-NLS-1$
+        form.getItems().add(pages);
+        return form;
+    }
+
+    @Test
+    public void testRestoreReallyLeavesTheRequestedPageWithoutADomainSelection()
+    {
+        FakeEditor editor = new FakeEditor();
+        FormPageSwitch pageSwitch = prepare(editor, NO_PUMP);
+        assertNull(pageSwitch.show());
+        assertEquals(Integer.valueOf(PAGE_ID), editor.currentPages.get(PAGES_ID));
+        assertNull(pageSwitch.restore());
+        assertEquals("a full NONE update retains the native page; restore must select its page", //$NON-NLS-1$
+            Integer.valueOf(DEFAULT_PAGE_ID), editor.currentPages.get(PAGES_ID));
+        assertEquals("an empty original selection must leave no frame", 0, editor.selectionFrame.length); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testRestoreDoesNotResetAnUnrelatedPagesGroup()
+    {
+        FakeEditor editor = new FakeEditor();
+        FormGroup other = FormFactory.eINSTANCE.createFormGroup();
+        other.setId(20);
+        other.setType(ManagedFormGroupType.PAGES);
+        other.getItems().add(page(21, "OtherDefault")); //$NON-NLS-1$
+        other.getItems().add(page(22, "OtherSelected")); //$NON-NLS-1$
+        editor.form.getItems().add(other);
+        editor.currentPages.put(20, 22);
+        FormPageSwitch pageSwitch = prepare(editor, NO_PUMP);
+        assertNull(pageSwitch.show());
+        assertNull(pageSwitch.restore());
+        assertEquals(Integer.valueOf(DEFAULT_PAGE_ID), editor.currentPages.get(PAGES_ID));
+        assertEquals("an unrelated native tab must not be reset", Integer.valueOf(22), //$NON-NLS-1$
+            editor.currentPages.get(20));
+    }
+
+    @Test
+    public void testRestoreReappliesASelectionInsideTheOriginalPage()
+    {
+        FakeEditor editor = new FakeEditor();
+        FormGroup original = page(12, "OriginalNondefault"); //$NON-NLS-1$
+        ((FormGroup)editor.form.getItems().get(0)).getItems().add(original);
+        editor.currentPages.put(PAGES_ID, 12);
+        FormField field = FormFactory.eINSTANCE.createFormField();
+        field.setId(4);
+        original.getItems().add(field);
+        editor.lastDomainSelection = new StructuredSelection(field);
+        FormPageSwitch pageSwitch = prepare(editor, NO_PUMP);
+        assertNull(pageSwitch.show());
+        assertNull(pageSwitch.restore());
+        assertEquals("the original nondefault page must win over the reset", Integer.valueOf(12), //$NON-NLS-1$
+            editor.currentPages.get(PAGES_ID));
+        assertEquals("the original selection frame must be reapplied", "[4]", //$NON-NLS-1$ //$NON-NLS-2$
+            Arrays.toString(editor.selectionFrame));
+    }
+
+    @Test
+    public void testNestedPagesRestoreInsideOutWithoutReopeningTheOuterRequestedPage()
+    {
+        FakeEditor editor = new FakeEditor();
+        FormGroup outerExtra = (FormGroup)((FormGroup)editor.form.getItems().get(0)).getItems().get(1);
+        FormGroup inner = FormFactory.eINSTANCE.createFormGroup();
+        inner.setId(30);
+        inner.setType(ManagedFormGroupType.PAGES);
+        inner.getItems().add(page(31, "InnerDefault")); //$NON-NLS-1$
+        inner.getItems().add(page(37, "InnerExtra")); //$NON-NLS-1$
+        outerExtra.getItems().add(inner);
+        editor.currentPages.put(30, 31);
+        FormPageSwitch pageSwitch = FormPageSwitch.prepare(editor,
+            EditorScreenshotHelper.ShowElementTarget.resolved("InnerExtra", 37, true), //$NON-NLS-1$
+            SHORT_TIMEOUT_MS, NO_PUMP);
+        assertNull(pageSwitch.show());
+        assertEquals(Integer.valueOf(37), editor.currentPages.get(30));
+        assertEquals(Integer.valueOf(PAGE_ID), editor.currentPages.get(PAGES_ID));
+
+        assertNull(pageSwitch.restore());
+
+        assertEquals("inner page must be restored before hiding its outer page", Integer.valueOf(31), //$NON-NLS-1$
+            editor.currentPages.get(30));
+        assertEquals("selecting the inner default last would reopen PageExtra", //$NON-NLS-1$
+            Integer.valueOf(DEFAULT_PAGE_ID), editor.currentPages.get(PAGES_ID));
     }
 
     private static EditorScreenshotHelper.ShowElementTarget target()
@@ -151,29 +296,32 @@ public class FormPageSwitchTest
         assertEquals(List.of("select[7]/full", "select[]/updateOnly"), editor.renders); //$NON-NLS-1$ //$NON-NLS-2$
 
         assertNull(pageSwitch.restore());
-        // Nothing was selected before: a plain full render, i.e. the default pages.
-        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "update/full"), editor.renders); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        // Nothing was selected before: explicitly select the default page, then clear its frame.
+        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "select[3]/full", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "select[]/updateOnly"), editor.renders); //$NON-NLS-1$
     }
 
     @Test
     public void testRestoreReappliesTheEditorsOwnSelection()
     {
         // The user clicked the 'Totals' tab: EDT stores the page as its last domain selection.
-        Form form = FormFactory.eINSTANCE.createForm();
         FormGroup totals = FormFactory.eINSTANCE.createFormGroup();
         totals.setName("Totals"); //$NON-NLS-1$
         totals.setId(12);
         totals.setType(ManagedFormGroupType.PAGE);
         FakeEditor editor = new FakeEditor();
-        editor.lastDomainSelection = new StructuredSelection(new Object[] { form, totals, "not an entity" }); //$NON-NLS-1$
+        ((FormGroup)editor.form.getItems().get(0)).getItems().add(totals);
+        editor.currentPages.put(PAGES_ID, 12);
+        editor.lastDomainSelection = new StructuredSelection(new Object[] { editor.form, totals, "not an entity" }); //$NON-NLS-1$
 
         FormPageSwitch pageSwitch = prepare(editor, NO_PUMP);
         pageSwitch.show();
         assertNull(pageSwitch.restore());
 
         // The way EDT re-applies it after its own renders: 0 for the form, the item id for the page.
-        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "select[0, 12]/full"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            editor.renders);
+        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "select[3]/full", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "select[0, 12]/full"), editor.renders); //$NON-NLS-1$
+        assertEquals(Integer.valueOf(12), editor.currentPages.get(PAGES_ID));
     }
 
     @Test
@@ -251,7 +399,7 @@ public class FormPageSwitchTest
     public void testUnreachableHooksNameTheRealCause()
     {
         // No synchronous render hooks at all (another EDT build): no flag advice, nothing to restore.
-        FormPageSwitch pageSwitch = prepare(new Object(), NO_PUMP);
+        FormPageSwitch pageSwitch = prepare(new FakeNoHooksEditor(), NO_PUMP);
         String error = pageSwitch.show();
 
         assertTrue(error, error.contains("could not be driven")); //$NON-NLS-1$
@@ -272,7 +420,8 @@ public class FormPageSwitchTest
         assertTrue(error, error.contains("failed")); //$NON-NLS-1$
         assertTrue("a throw inside the render may have switched the page", pageSwitch.isTouched()); //$NON-NLS-1$
         assertNull(pageSwitch.restore());
-        assertEquals(List.of("select[7]/full", "update/full"), editor.renders); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(List.of("select[7]/full", "select[3]/full", "select[]/updateOnly"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            editor.renders);
     }
 
     @Test
@@ -286,7 +435,8 @@ public class FormPageSwitchTest
 
         assertTrue(error, error.contains("selection frame could not be cleared")); //$NON-NLS-1$
         assertNull(pageSwitch.restore());
-        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "update/full"), editor.renders); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals(List.of("select[7]/full", "select[]/updateOnly", "select[3]/full", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "select[]/updateOnly"), editor.renders); //$NON-NLS-1$
     }
 
     @Test
@@ -311,7 +461,7 @@ public class FormPageSwitchTest
         assertTrue(error, error.contains("threw")); //$NON-NLS-1$
         assertTrue(pageSwitch.isTouched());
         assertNull(pageSwitch.restore());
-        assertEquals(List.of("update/full"), editor.renders); //$NON-NLS-1$
+        assertEquals(List.of("select[3]/full", "select[]/updateOnly"), editor.renders); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -327,7 +477,8 @@ public class FormPageSwitchTest
         assertNotNull(restoreError);
         assertTrue(restoreError, restoreError.contains("could not be returned to the page it showed before")); //$NON-NLS-1$
         assertTrue(restoreError, restoreError.contains("'Delivery'")); //$NON-NLS-1$
-        assertTrue(restoreError, restoreError.contains("refresh=true")); //$NON-NLS-1$
+        assertTrue(restoreError, restoreError.contains("showElement set to the desired page")); //$NON-NLS-1$
+        assertTrue(restoreError, restoreError.contains("refresh=true alone does not reset")); //$NON-NLS-1$
         assertNull("the restore runs once", pageSwitch.restore()); //$NON-NLS-1$
     }
 
@@ -356,7 +507,7 @@ public class FormPageSwitchTest
         pageSwitch.show();
         assertNull(pageSwitch.restore());
         assertNull(pageSwitch.restore());
-        assertEquals(3, editor.renders.size());
+        assertEquals(4, editor.renders.size());
     }
 
     @Test
@@ -374,11 +525,33 @@ public class FormPageSwitchTest
         assertTrue("the render was retried until the deadline", early.calls > 1); //$NON-NLS-1$
     }
 
+    @Test
+    public void testRestoreFrameClearFailureIsReported()
+    {
+        FakeEditor editor = new FakeEditor();
+        editor.throwOnRender = 3;
+        FormPageSwitch pageSwitch = prepare(editor, NO_PUMP);
+        assertNull(pageSwitch.show());
+        String error = pageSwitch.restore();
+        assertNotNull(error);
+        assertTrue(error, error.contains("could not be returned")); //$NON-NLS-1$
+        assertEquals("the restored page is real even when clearing its frame fails", //$NON-NLS-1$
+            Integer.valueOf(DEFAULT_PAGE_ID), editor.currentPages.get(PAGES_ID));
+        assertNull("a failed restore is not retried implicitly", pageSwitch.restore()); //$NON-NLS-1$
+    }
+
+    /** A real form model with no reflective render hooks. */
+    private static final class FakeNoHooksEditor
+    {
+        @SuppressWarnings("unused") // read reflectively
+        final Form form = formWithPages();
+    }
+
     /** An editor whose render returns early and never replaces the session. */
     private static final class FakeEarlyReturnEditor
     {
         @SuppressWarnings("unused") // read reflectively
-        final Object form = new Object();
+        final Form form = formWithPages();
         @SuppressWarnings("unused") // read reflectively
         final FakeController controller = new FakeController();
         @SuppressWarnings("unused") // read reflectively

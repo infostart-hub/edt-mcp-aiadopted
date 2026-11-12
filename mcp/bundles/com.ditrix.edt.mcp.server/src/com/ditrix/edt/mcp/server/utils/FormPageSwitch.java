@@ -6,10 +6,13 @@ package com.ditrix.edt.mcp.server.utils;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.eclipse.emf.ecore.EObject;
 import org.eclipse.jface.viewers.IStructuredSelection;
 
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormItem;
+import com._1c.g5.v8.dt.form.model.FormGroup;
+import com._1c.g5.v8.dt.form.model.ManagedFormGroupType;
 
 import com.ditrix.edt.mcp.server.Activator;
 import com.ditrix.edt.mcp.server.utils.EditorScreenshotHelper.RenderOutcome;
@@ -23,8 +26,9 @@ import com.ditrix.edt.mcp.server.utils.EditorScreenshotHelper.SyncRender;
  * no event pumping after it, and call {@link #restore()} in the {@code finally}. UI thread only.
  *
  * <p>Best effort by construction: EDT keeps no readable page state per Pages group (a render takes
- * only select-by-id ids), so the restore re-selects the editor's last domain selection, as
- * {@code FormWysiwygRepresentation.refreshSelection} does; other Pages groups show their default pages.</p>
+ * only select-by-id ids). Restore explicitly selects the default pages of the target's enclosing
+ * Pages groups, from inner to outer, then re-selects the editor's last domain selection, as
+ * {@code FormWysiwygRepresentation.refreshSelection} does. Unrelated Pages groups are not reset.</p>
  */
 public final class FormPageSwitch
 {
@@ -34,6 +38,7 @@ public final class FormPageSwitch
     private final Object representation;
     private final ShowElementTarget target;
     private final int[] previousSelection;
+    private final int[] defaultPageIds;
     private final long deadline;
     private final Runnable pump;
     /** Whether a render of ours may have changed the editor (a throw counts). */
@@ -41,11 +46,12 @@ public final class FormPageSwitch
     private boolean restoreDone;
 
     private FormPageSwitch(Object representation, ShowElementTarget target, int[] previousSelection,
-        long deadline, Runnable pump)
+        int[] defaultPageIds, long deadline, Runnable pump)
     {
         this.representation = representation;
         this.target = target;
         this.previousSelection = previousSelection;
+        this.defaultPageIds = defaultPageIds;
         this.deadline = deadline;
         this.pump = pump;
     }
@@ -69,7 +75,7 @@ public final class FormPageSwitch
     static FormPageSwitch prepare(Object representation, ShowElementTarget target, int timeoutMs, Runnable pump)
     {
         return new FormPageSwitch(representation, target, selectedIds(representation),
-            System.currentTimeMillis() + timeoutMs, pump);
+            defaultPageIds(representation, target), System.currentTimeMillis() + timeoutMs, pump);
     }
 
     /**
@@ -153,10 +159,11 @@ public final class FormPageSwitch
     }
 
     /**
-     * Puts the editor back, once and only if a render of this switch may have changed it: one full
-     * render selecting the editor's last domain selection (which re-opens the pages enclosing it), or a
-     * plain full render (the default pages) when nothing was selected. Best effort: other Pages groups
-     * show their default pages, and the previous selection frame is not guaranteed.
+     * Puts the editor back, once and only if this switch may have changed it. A full NONE/update
+     * render does not reset native page state: explicitly select each affected group's default page
+     * from inner to outer, then reapply the original domain selection. With no original selection,
+     * clear the frame update-only after the page selections. Unrelated groups retain their tabs.
+     * Best effort: a user's page that is absent from the last domain selection is not observable.
      *
      * @return {@code null} when nothing needed restoring or the render ran, else the error
      */
@@ -170,7 +177,7 @@ public final class FormPageSwitch
         String cause;
         try
         {
-            SyncRender restore = render(previousSelection.length == 0 ? null : previousSelection, false);
+            SyncRender restore = restorePagesAndSelection();
             if (restore.outcome == RenderOutcome.RENDERED)
             {
                 return null;
@@ -187,7 +194,56 @@ public final class FormPageSwitch
         return "The form editor could not be returned to the page it showed before the capture (" + cause //$NON-NLS-1$
             + "), so it may still show the page holding element '" + target.getName() //$NON-NLS-1$
             + "', and a later capture without showElement may return that page. Call again with " //$NON-NLS-1$
-            + "refresh=true to re-render the editor."; //$NON-NLS-1$
+            + "showElement set to the desired page; refresh=true alone does not reset native page state."; //$NON-NLS-1$
+    }
+
+    private SyncRender restorePagesAndSelection()
+    {
+        for (int pageId : defaultPageIds)
+        {
+            SyncRender page = render(new int[] { pageId }, false);
+            if (page.outcome != RenderOutcome.RENDERED)
+            {
+                return page;
+            }
+        }
+        // Applying the old selection LAST lets it reopen its nondefault page, overriding the
+        // explicit default selections. An empty selection only clears the frame; it cannot itself
+        // switch a native page. Do not pump between the last page render and that frame clear.
+        return previousSelection.length == 0
+            ? EditorScreenshotHelper.renderRequestedFormSynchronously(representation, new int[0], true)
+            : render(previousSelection, false);
+    }
+
+    /** Default page ids for ONLY the groups this target can switch, ordered inner to outer. */
+    private static int[] defaultPageIds(Object representation, ShowElementTarget target)
+    {
+        if (!target.isOnPage())
+        {
+            return new int[0];
+        }
+        if (EditorScreenshotHelper.getRepresentationForm(representation) instanceof Form form)
+        {
+            for (EObject object : PersistedContents.descendants(form))
+            {
+                if (!(object instanceof FormItem item) || item.getId() != target.getItemId())
+                {
+                    continue;
+                }
+                List<Integer> pages = new ArrayList<>();
+                for (EObject parent = item.eContainer(); parent != null; parent = parent.eContainer())
+                {
+                    if (parent instanceof FormGroup group && group.getType() == ManagedFormGroupType.PAGES
+                        && !group.getItems().isEmpty())
+                    {
+                        pages.add(Integer.valueOf(group.getItems().get(0).getId()));
+                    }
+                }
+                return pages.stream().mapToInt(Integer::intValue).toArray();
+            }
+        }
+        throw new IllegalStateException("The page hierarchy of element '" + target.getName() //$NON-NLS-1$
+            + "' cannot be read, so the editor cannot safely restore its pages after the capture."); //$NON-NLS-1$
     }
 
     private static String cause(RenderOutcome outcome)

@@ -169,8 +169,8 @@ public final class ComparisonEngine
 
         /**
          * @param handle the comparison
-         * @return its status - possibly {@code null}, which is EDT's answer when it no longer
-         *     holds the handle's session - or {@link PlatformAnswer#unavailable()} when the
+         * @return its status - possibly {@code null}, before the process publishes its first
+         *     status or when EDT no longer holds its session - or {@link PlatformAnswer#unavailable()} when the
          *     service could not be asked
          */
         PlatformAnswer<ComparisonProcessStatus> status(ComparisonProcessHandle handle);
@@ -247,7 +247,8 @@ public final class ComparisonEngine
         /**
          * The status could NOT be read this tick: either the read threw — then
          * {@link Progress#statusReadFailure()} carries what was logged — or EDT answered nothing
-         * at all, which its manager does whenever it no longer holds the handle's session.
+         * at all. That also happens before the registered process publishes its first status,
+         * so handle visibility alone cannot decide whether the comparison has begun.
          * <p>
          * This is an ABSENCE of information, not a phase the platform reported, and the two must
          * not be confused: quoting it as a status credits EDT with saying something it never said,
@@ -328,7 +329,7 @@ public final class ComparisonEngine
          * A THIRD fact, distinct from both of the above, and the reason it is here: an unreadable
          * tick has three causes and a caller that describes it has to pick the right one. The
          * read threw ({@link #statusReadFailure()} names it); or EDT answered nothing, which its
-         * manager does when it no longer holds the session; or the comparison service was not
+         * manager also does before its first process status; or the comparison service was not
          * registered when the question was asked, in which case EDT said nothing because nobody
          * asked it. Saying the second when the third happened credits the platform with a report
          * it never made.

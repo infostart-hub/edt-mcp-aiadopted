@@ -83,7 +83,34 @@ MCP_PORT = os.environ.get("MCP_PORT", "8765")
 PROJECT = os.environ.get("MCP_PROJECT", "TestConfiguration")      # EDT project NAME (for MCP calls)
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))          # tests/e2e
-REPO_ROOT = os.path.abspath(os.path.join(HARNESS_DIR, "..", ".."))
+SOURCE_ROOT = os.path.realpath(os.path.join(HARNESS_DIR, "..", ".."))
+
+
+def _fixture_repo_root(source_root):
+    """Select an explicit fixture-data repository without relocating the suite's source.
+
+    An invalid override is a configuration error, never permission to reset the source checkout.
+    A standalone Git root is required; inheriting a parent repository would enlarge the reset
+    boundary. The historical source checkout remains the default only when no override was set.
+    """
+    if "MCP_FIXTURE_REPO" not in os.environ:
+        return source_root
+    selected = os.environ["MCP_FIXTURE_REPO"]
+    if not selected or not os.path.isabs(selected):
+        raise ValueError("MCP_FIXTURE_REPO must name an absolute standalone Git fixture repository")
+    root = os.path.realpath(selected)
+    if not os.path.isdir(root) or not os.path.exists(os.path.join(root, ".git")):
+        raise ValueError("MCP_FIXTURE_REPO must be an existing standalone Git fixture repository: %r"
+                         % selected)
+    probe = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=30)
+    if probe.returncode != 0 or os.path.normcase(os.path.realpath(probe.stdout.strip())) != \
+            os.path.normcase(root):
+        raise ValueError("MCP_FIXTURE_REPO is not a standalone Git fixture repository: %r" % selected)
+    return root
+
+
+REPO_ROOT = _fixture_repo_root(SOURCE_ROOT)
 # The 1C fixture lives under tests/ (grouped with this suite + the YAXUnit test
 # extension), so its git path is NOT the same as the EDT project name. Keep the
 # two decoupled: PROJECT is the name MCP calls use; PROJECT_REL is the git path.
@@ -566,6 +593,123 @@ def _is_transient_building(result):
     return bool(_BUILDING_REFUSAL_RE.search(result.error_text()))
 
 
+_OUTPUT_SCHEMAS = None
+
+
+def _output_schemas(refresh=False):
+    """Cache each advertised tool's contract, including explicit schema-free entries."""
+    global _OUTPUT_SCHEMAS
+    if refresh:
+        _OUTPUT_SCHEMAS = None
+    if _OUTPUT_SCHEMAS is None:
+        schemas, params, cursors = {}, {}, set()
+        while True:
+            raw = _post("tools/list", params)
+            page = raw.get("result", {})
+            if "error" in raw or not isinstance(page.get("tools"), list):
+                raise AssertionError("tools/list: cannot load outputSchema contracts: %r" % raw)
+            for tool in page["tools"]:
+                schemas[tool["name"]] = tool.get("outputSchema")
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if cursor in cursors:
+                raise AssertionError("tools/list: repeated nextCursor %r" % cursor)
+            cursors.add(cursor)
+            params = {"cursor": cursor}
+        _OUTPUT_SCHEMAS = schemas
+    return _OUTPUT_SCHEMAS
+
+
+def validate_output_schema(value, schema, tool, path="$"):
+    """Validate the server's JSON Schema subset using only the standard library.
+
+    Annotation keywords do not constrain instances. Unknown validation keywords fail
+    closed so a new server schema feature cannot silently weaken this check.
+    """
+    def fail(rule, detail):
+        raise AssertionError("%s structuredContent %s: %s: %s" % (tool, path, rule, detail))
+
+    if isinstance(schema, bool):
+        if not schema:
+            fail("false schema", "no value is allowed")
+        return
+    supported = {"type", "properties", "items", "required", "enum", "additionalProperties",
+                 "oneOf", "anyOf", "description", "title", "$schema", "$id", "$comment",
+                 "default", "examples"}
+    for keyword in schema:
+        if keyword not in supported:
+            fail("unsupported schema keyword", keyword)
+    types = schema.get("type")
+    if types is not None:
+        types = types if isinstance(types, list) else [types]
+        matches = {"object": isinstance(value, dict), "array": isinstance(value, list),
+                   "string": isinstance(value, str), "boolean": isinstance(value, bool),
+                   "null": value is None,
+                   "integer": type(value) in (int, float) and value % 1 == 0,
+                   "number": type(value) in (int, float)}
+        if any(t not in matches for t in types):
+            fail("type", "unsupported type %r" % types)
+        if not any(matches[t] for t in types):
+            fail("type", "expected %r, got %s" % (types, type(value).__name__))
+    if "enum" in schema:
+        # Python equates True with 1, unlike JSON Schema. Compare JSON values recursively.
+        def equal(a, b):
+            if isinstance(a, bool) or isinstance(b, bool):
+                return type(a) is type(b) and a == b
+            if isinstance(a, list) and isinstance(b, list):
+                return len(a) == len(b) and all(equal(x, y) for x, y in zip(a, b))
+            if isinstance(a, dict) and isinstance(b, dict):
+                return a.keys() == b.keys() and all(equal(a[k], b[k]) for k in a)
+            return a == b
+        if not any(equal(value, candidate) for candidate in schema["enum"]):
+            fail("enum", "%r is not one of %r" % (value, schema["enum"]))
+    for keyword in ("oneOf", "anyOf"):
+        if keyword in schema:
+            count, errors = 0, []
+            for alternative in schema[keyword]:
+                try:
+                    validate_output_schema(value, alternative, tool, path)
+                    count += 1
+                except AssertionError as error:
+                    errors.append(str(error))
+            if (keyword == "oneOf" and count != 1) or (keyword == "anyOf" and count == 0):
+                fail(keyword, "%d matching alternatives; %s" % (count, "; ".join(errors)))
+    if isinstance(value, dict):
+        for name in schema.get("required", []):
+            if name not in value:
+                fail("required", "missing property %r" % name)
+        properties = schema.get("properties", {})
+        for name, member in value.items():
+            member_path = path + "[" + json.dumps(name, ensure_ascii=True) + "]"
+            if name in properties:
+                validate_output_schema(member, properties[name], tool, member_path)
+            elif "additionalProperties" in schema:
+                if schema["additionalProperties"] is False:
+                    raise AssertionError("%s structuredContent %s: additionalProperties: unexpected property"
+                                         % (tool, member_path))
+                validate_output_schema(member, schema["additionalProperties"], tool, member_path)
+    if isinstance(value, list) and "items" in schema:
+        for index, member in enumerate(value):
+            validate_output_schema(member, schema["items"], tool, "%s[%d]" % (path, index))
+
+
+def _validate_tool_output(tool, result):
+    if result.is_error or result.rpc_error or "structuredContent" not in result.result:
+        return
+    if isinstance(result.structured, dict) and result.structured.get("success") is False:
+        return
+    schemas = _output_schemas()
+    if tool not in schemas:
+        schemas = _output_schemas(refresh=True)
+    if tool not in schemas:
+        raise AssertionError("%s structuredContent $: outputSchema discovery: tool is not advertised "
+                             "by tools/list; enable its toolset before calling it" % tool)
+    schema = schemas[tool]
+    if schema is not None:
+        validate_output_schema(result.structured, schema, tool)
+
+
 def call(tool, arguments):
     """Send tools/call and return a Result.
 
@@ -575,6 +719,7 @@ def call(tool, arguments):
     until it clears stabilizes the slower matrix legs without masking a real success/error
     (which returns unchanged on the next attempt). Bounded by BUILDING_RETRY_TIMEOUT; on
     expiry the building refusal is returned so the test fails loudly rather than hanging."""
+    global _OUTPUT_SCHEMAS
     deadline = time.time() + BUILDING_RETRY_TIMEOUT
     attempt = 0
     # Record the attempt BEFORE issuing it, once for the whole retry loop. If the request dies
@@ -585,6 +730,8 @@ def call(tool, arguments):
     # Prove the body can be built before counting the attempt. If this raises, nothing left this
     # process, so no outcome exists for anyone to read back.
     json.dumps({"name": tool, "arguments": arguments})
+    if tool == "enable_toolset":
+        _OUTPUT_SCHEMAS = None
     _record_attempt(tool, arguments)
     while True:
         try:
@@ -608,6 +755,7 @@ def call(tool, arguments):
             _BUILDING_REFUSALS_SEEN.append(result.error_text())
         if not building or time.time() >= deadline:
             _record_outcome(tool, arguments, result.is_error, result.structured)
+            _validate_tool_output(tool, result)
             return result
         attempt += 1
         time.sleep(min(2 * attempt, 10))
@@ -737,8 +885,12 @@ def _confirmed(args):
 # the Java side and is missing here fails the suite. Hand-maintained membership silently rots -
 # apply_quick_fix landed on master mutating the model, and this set did not know about it.
 MODEL_MUTATION_TOOLS = frozenset({
-    "create_metadata", "modify_metadata", "write_module_source",
+    # A conflict-dialog Import press can rewrite project sources through EDT.
+    "edt_dialog",
+    "sort_metadata", "create_metadata", "modify_metadata", "write_module_source",
     "apply_quick_fix", "build_external_objects",
+    # The preview never writes; a confirmed clone writes only after validation and the hash check.
+    "clone_metadata_object",
     # dcs authors schemas / settings / dynamic lists. It belongs here rather than in
     # DEEP_MUTATION_TOOLS because an ordinary refusal does not move the model: the writer validates
     # the request before the first eSet. The exception is a post-commit force-export scheduling
@@ -768,12 +920,15 @@ NON_FIXTURE_MODEL_MUTATION_TOOLS = frozenset({
 
 # Action-based writers share one exemption table. All other actions stay conservative.
 READ_ONLY_MODEL_ACTIONS = {
+    "edt_dialog": frozenset({"list"}),
     "dcs": frozenset({"get", "options"}),
     "business_process_route_map": frozenset({"get"}),
 }
 
 
 def _is_read_only_model_action(tool, args):
+    if tool == "sort_metadata":
+        return isinstance(args, dict) and args.get("mode") == "list"
     return (isinstance(args, dict) and isinstance(args.get("action"), str)
             and args["action"] in READ_ONLY_MODEL_ACTIONS.get(tool, ()))
 
@@ -1310,7 +1465,10 @@ def initialize(capabilities=None):
     """MCP lifecycle handshake: initialize -> capture session id -> notifications/initialized.
 
     Per the 2025-06-18 / 2025-11-25 spec the client MUST send initialize first and
-    then the initialized notification before normal operations. Done once at startup."""
+    then the initialized notification before normal operations. Reset cached contracts
+    for the new session's capabilities and visible tools."""
+    global _OUTPUT_SCHEMAS
+    _OUTPUT_SCHEMAS = None
     result = _post("initialize", {
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": capabilities or {},
@@ -1387,69 +1545,78 @@ def _workspace_dir(list_projects_markdown=None):
 
 
 def _all_edt_projects_ready(list_projects_markdown, not_ready=None, ignore=()):
-    """True when every EDT project in the list_projects table reads 'ready'.
+    """Accept only an observed project catalog whose eligible rows explicitly read 'ready'.
 
-    Two kinds of row are skipped, because neither can ever become ready and neither can serve a
-    tool: one KNOWN to be non-EDT (`EDT Project` = No and no V8 nature), and one that is
-    CLOSED (`Open` = No). External-object projects carry V8ExternalObjectsNature and must settle
-    even though list_projects labels them `EDT Project` = No. Legacy five-column tables have
-    no nature evidence and keep skipping No rows.
-    A closed project reads 'not_available' forever - EDT is deliberately not building it, which
-    is the entire point of closing a heavy configuration - so blocking on it aborts every local
-    run on such a workspace before the first test starts. A test that actually targets a closed
-    project still fails on its own, through the per-tool ProjectStateChecker guard, with a message
-    naming that project instead of a mute suite-level timeout. Everything else, "-" included,
-    keeps blocking: a real project that is genuinely building must never be mistaken for one that
-    cannot become ready.
-
-    A workspace that hosts a 1C STANDALONE SERVER
-    contains the WST container project ("Servers", `EDT Project` = No, no natures), which is
-    permanently 'not_available' because it is not an EDT project at all and can never become
-    ready. A plain substring scan for 'not_available' over the whole table therefore never
-    succeeds on such a workspace: the suite waited out the full timeout and aborted with "the
-    configuration did not finish indexing" while every real project had been ready all along.
-
-    Falls back to a conservative substring scan when no row can be parsed (an output-format
-    change must not degrade to a permanent "ready"). When `not_ready` is supplied,
-    fill it with the blocking (project name, state) pairs from this same parse so timeout callers
-    can report which project prevented progress without parsing the table again. Project names
-    explicitly supplied in `ignore` are skipped before their state is checked.
-
-    Known limit of the nature evidence: ListProjectsTool renders only the FIRST THREE natures of a
-    project and summarises the rest as '...+N', so a V8 nature in fourth place or later is not seen
-    here and that `EDT Project` = No row falls back to being skipped. Harmless for the fixture (its
-    projects carry two natures), but a project with more natures needs `ignore` or a wider cell.
+    Known non-EDT projects and deliberately closed projects cannot become ready and do not
+    block. Exact names in `ignore` are skipped too. Unknown flags/states, an unreadable table,
+    and incomplete output all block: absence of a known busy word is not readiness evidence.
+    The canonical zero-project response is a valid empty catalog, not a missing observation.
+    `not_ready` receives the same parse's blocking (project, state/diagnostic) pairs.
     """
-    rows = []
-    for line in list_projects_markdown.splitlines():
+    rows, blocking_projects = [], []
+    header = None
+    total = None
+    empty_catalog = False
+    for line in (list_projects_markdown or "").splitlines():
         line = line.strip()
-        if not line.startswith("|") or set(line) <= set("|- "):
-            continue  # separator row (or an empty one)
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 5 or cells[0].lower() == "name":
-            continue  # header row, or a table shape this parse does not know
-        rows.append(cells)
-    if not rows:
-        low = list_projects_markdown.lower()
-        blocking_states = [state for state in ("building", "not_available") if state in low]
-        if not_ready is not None:
-            not_ready[:] = [("<unparsed project table>", state) for state in blocking_states]
-        return not blocking_states
-    blocking_projects = []
-    for cells in rows:
-        if cells[0] in ignore:
+        if not line or line == "## Workspace Projects":
             continue
-        state, is_open = cells[1].strip().lower(), cells[3].strip().lower()
-        edt_project = cells[4].strip().lower()
-        natures = cells[5] if len(cells) > 5 else ""
-        edt_nature = any(token.strip().startswith("V8") and token.strip().endswith("Nature")
-                         for token in natures.split(","))
-        if edt_project == "no" and not edt_nature:
-            continue  # a KNOWN non-EDT project (the standalone server's "Servers" container)
-        if is_open == "no":
-            continue  # closed on purpose: it will never leave 'not_available' by itself
-        if state in ("building", "not_available"):
-            blocking_projects.append((cells[0], state))
+        count = re.fullmatch(r"\*\*Total:\*\* ([0-9]+) projects", line)
+        if count:
+            if total is not None:
+                blocking_projects.append(("<project catalog>", "duplicate total"))
+            total = int(count.group(1))
+            continue
+        if line == "*No projects found.*":
+            empty_catalog = True
+            continue
+        cells = split_markdown_row(line)
+        if cells and line.endswith("|"):
+            if header is None and len(cells) >= 5 \
+                    and cells[:2] == ["Name", "State"] \
+                    and cells[3:5] == ["Open", "EDT Project"]:
+                header = cells
+                continue
+            if header is not None and len(cells) == len(header):
+                if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                    continue
+                rows.append(cells)
+                continue
+            blocking_projects.append((cells[0] or "<unnamed project>", "malformed project row"))
+        else:
+            # Retain a useful observed-state diagnostic without treating arbitrary prose as a
+            # second readiness format. Even 'state: ready' is not a project catalog.
+            diagnostic = line.removeprefix("state: ")[:200]
+            blocking_projects.append(("<unparsed project table>", diagnostic))
+    if empty_catalog and (total != 0 or rows or header is not None):
+        blocking_projects.append(("<project catalog>", "inconsistent empty catalog"))
+    if total is not None and total != len(rows):
+        blocking_projects.append(("<project catalog>", "total does not match project rows"))
+    if not rows and not (empty_catalog and total == 0):
+        blocking_projects.append(("<unparsed project table>", "no project observations"))
+    seen = set()
+    for cells in rows:
+        name, state, is_open, edt_project = cells[0], cells[1], cells[3], cells[4]
+        if not name or name in seen:
+            blocking_projects.append((name or "<unnamed project>", "missing or duplicate project name"))
+        seen.add(name)
+        if name in ignore or is_open == "No":
+            continue
+        # A contradictory server flag must not hide a known EDT lifecycle from the gate.
+        # Plain workspace containers (for example Servers) still remain outside it.
+        natures = set(cells[5].split(", ")) if len(cells) > 5 else set()
+        known_edt = bool(natures & {
+            "V8ConfigurationNature", "V8ExtensionNature", "V8ExternalObjectsNature"})
+        if edt_project == "No":
+            if "V8ExternalObjectsNature" in natures:
+                blocking_projects.append((name, state if state != "ready" else "EDT nature contradicts EDT Project=No"))
+            elif known_edt:
+                blocking_projects.append((name, "EDT nature contradicts EDT Project=No"))
+            continue
+        if state != "ready":
+            blocking_projects.append((name, state or "<missing state>"))
+        elif is_open != "Yes" or edt_project != "Yes":
+            blocking_projects.append((name, "unconfirmed Open/EDT Project flags"))
     if not_ready is not None:
         not_ready[:] = blocking_projects
     return not blocking_projects
@@ -1500,14 +1667,14 @@ def wait_for_project_ready(timeout=None, failure_details=None, progress=None, ig
     the default is overridable via E2E_PROJECT_READY_TIMEOUT (seconds). Progress is
     logged periodically so a slow cloud run is visibly "still indexing", not hung.
 
-    Best-effort: returns True once ready (or if state cannot be read), False on timeout.
+    Returns True only after a successful, readable catalog confirms readiness; otherwise
+    keeps polling and returns False on timeout. Tool/RPC errors never certify readiness.
     If `failure_details` is a list, a timeout replaces its contents with one diagnostic naming
     the last parsed blocking projects and their states. If `progress` is a dict, completion
     replaces its contents with whether the blocking project/state snapshot ever changed, the
     observed snapshots (consecutive duplicates removed and capped), the poll count, elapsed
-    seconds, and the final raw list_projects text. The per-tool ProjectStateChecker guard is the
-    real safety net — this only removes the test-timing flake so a normal run starts on a
-    fully-indexed workspace. Names in `ignore_projects` do not participate in this wait.
+    seconds, and the final raw list_projects text. Names in `ignore_projects` do not
+    participate in this wait. The per-tool ProjectStateChecker remains an additional guard.
     """
     if timeout is None:
         timeout = int(os.environ.get("E2E_PROJECT_READY_TIMEOUT", "180"))
@@ -1530,25 +1697,30 @@ def wait_for_project_ready(timeout=None, failure_details=None, progress=None, ig
     while time.time() < deadline:
         try:
             polls += 1
-            text = call("list_projects", {}).text or ""
+            result = call("list_projects", {})
+            text = result.text or ""
             last_list_projects = text
-            if text:
-                not_ready = []
+            not_ready = []
+            if result.is_error or result.rpc_error:
+                message = (result.rpc_error.get("message", str(result.rpc_error))
+                           if result.rpc_error else result.error_text())
+                not_ready = [("<list_projects error>", message or "tool reported an error")]
+                ready = False
+            else:
                 ready = _all_edt_projects_ready(text, not_ready=not_ready, ignore=ignore_projects)
-                snapshot = tuple(sorted(not_ready))
-                if last_snapshot is not None and snapshot != last_snapshot:
-                    changed = True
-                if last_snapshot is None or snapshot != last_snapshot:
-                    observed.append(snapshot)
-                    if len(observed) > _PROJECT_READY_OBSERVED_LIMIT:
-                        observed.pop(0)
-                last_snapshot = snapshot
-                if ready:
-                    _store_project_ready_progress(
-                        progress, changed, observed, polls, start, last_list_projects)
-                    return True
-                if not_ready:
-                    last_not_ready = not_ready
+            snapshot = tuple(sorted(not_ready))
+            if last_snapshot is not None and snapshot != last_snapshot:
+                changed = True
+            if last_snapshot is None or snapshot != last_snapshot:
+                observed.append(snapshot)
+                if len(observed) > _PROJECT_READY_OBSERVED_LIMIT:
+                    observed.pop(0)
+            last_snapshot = snapshot
+            if ready:
+                _store_project_ready_progress(
+                    progress, changed, observed, polls, start, last_list_projects)
+                return True
+            last_not_ready = not_ready
         except E2ECallTimeout:
             # The one failure a best-effort catch must NOT swallow: the server is still running
             # that call, so retrying - or reporting success - hides it from the runner, the only
@@ -1560,8 +1732,9 @@ def wait_for_project_ready(timeout=None, failure_details=None, progress=None, ig
             # best-effort.
             _failed_settle_evidence(last_list_projects)
             raise
-        except Exception:
-            pass
+        except Exception as error:
+            last_not_ready = [("<list_projects exception>", "%s: %s"
+                               % (type(error).__name__, error))]
         now = time.time()
         if now - last_log >= 15:
             print("  [wait_for_project_ready] config still indexing (%ds elapsed, %ds left of %ds)..."
@@ -1575,16 +1748,17 @@ def wait_for_project_ready(timeout=None, failure_details=None, progress=None, ig
     return False
 
 
-def wait_for_named_projects_ready(names, timeout=180, ctx=""):
+def wait_for_named_projects_ready(names, timeout=180, ctx="", *, invoke=None):
     """Poll list_projects(format=json) until every project in `names` reads 'ready'.
 
     Returns the last {name: state} map so the caller asserts on it (and on what else it holds).
     Unlike wait_for_project_ready this reads the JSON contract and requires every named project
     to exist and read 'ready', regardless of its EDT flag, nature, or open state.
+    An optional invoke uses the same readiness contract over a different transport.
     """
     deadline = time.time() + timeout
     while True:
-        listed = call("list_projects", {"format": "json"})
+        listed = (invoke or call)("list_projects", {"format": "json"})
         assert_ok(listed, "list_projects while waiting for %s" % (ctx or sorted(names)))
         states = {row["name"]: row["state"] for row in listed.structured["projects"]}
         if all(states.get(name) == "ready" for name in names) or time.time() > deadline:
@@ -1653,6 +1827,48 @@ FIXTURE_REL_BY_PROJECT = {
 }
 
 
+def _validated_fixture_rel(rel):
+    """Return one declared, real fixture directory; reject broad Git pathspecs before Git runs."""
+    if not isinstance(rel, str) or not rel or rel != rel.strip() \
+            or any(part in ("", ".", "..") for part in rel.split("/")) \
+            or any(char in rel for char in "\\:*?[]") \
+            or any(ord(char) < 32 for char in rel) or os.path.isabs(rel):
+        raise ValueError("unsafe fixture path: %r; use a literal repository-relative fixture directory"
+                         % rel)
+    if rel not in ALL_FIXTURE_RELS:
+        raise ValueError("undeclared fixture path: %r; choose a configured fixture project" % rel)
+    root = os.path.realpath(REPO_ROOT)
+    target = os.path.join(root, *rel.split("/"))
+    resolved = os.path.realpath(target)
+    try:
+        contained = os.path.commonpath([root, resolved]) == root and resolved != root
+    except ValueError:
+        contained = False
+    # Reject reparse points below the root even if they land elsewhere INSIDE the repository:
+    # a fixture link to a source directory is not permission to revert that source directory.
+    if not contained or os.path.normcase(resolved) != os.path.normcase(target):
+        raise ValueError("fixture path escapes its declared directory through a link: %r" % rel)
+    marker = os.path.join(target, ".project")
+    if not os.path.isdir(target) or not os.path.isfile(marker) \
+            or os.path.normcase(os.path.realpath(marker)) != os.path.normcase(marker):
+        raise ValueError("fixture path is not a real EDT project directory with .project: %r" % rel)
+    return rel
+
+
+def _validate_fixture_configuration():
+    """Preflight the entire reset scope before the first fixture can be changed."""
+    if len(set(ALL_FIXTURE_RELS)) != len(ALL_FIXTURE_RELS):
+        raise ValueError("configured fixture paths must be distinct")
+    for rel in ALL_FIXTURE_RELS:
+        _validated_fixture_rel(rel)
+    for first in ALL_FIXTURE_RELS:
+        if any(second.startswith(first + "/") for second in ALL_FIXTURE_RELS if second != first):
+            raise ValueError("configured fixture paths may not overlap: %r" % first)
+
+
+_validate_fixture_configuration()
+
+
 def _reset_rel(rel):
     """Hard-revert one fixture path to the committed baseline (HEAD).
 
@@ -1667,8 +1883,9 @@ def _reset_rel(rel):
             _git never checks a return code, so without this a revert that could not run at all -
             a locked index, a file the editor still holds open - is indistinguishable from one
             that had nothing to do."""
+    rel = _validated_fixture_rel(rel)
     failures = []
-    for args in (("reset", "-q", "--", rel), ("checkout", "HEAD", "--", rel), ("clean", "-fd", rel)):
+    for args in (("reset", "-q", "--", rel), ("checkout", "HEAD", "--", rel), ("clean", "-fd", "--", rel)):
         completed = _git(*args)
         if completed.returncode != 0:
             failures.append("git %s -> exit %d: %s"
@@ -1791,6 +2008,7 @@ def reset_all_fixtures():
     with _FIXTURE_LOCK:
         if _FIXTURES_FROZEN:
             return False
+        _validate_fixture_configuration()
         failures = {}
         for rel in ALL_FIXTURE_RELS:
             failed = _reset_rel(rel)
@@ -1820,6 +2038,49 @@ def diff():
 def read_disk(relpath):
     with open(os.path.join(PROJECT_DIR, relpath), encoding="utf-8") as f:
         return f.read()
+
+
+def metadata_collection_state(project_name, fqn):
+    """Read one actual model EList and its optional V8 code style autosort policy."""
+    result = call("sort_metadata", {"projectName": project_name, "fqn": fqn, "mode": "list"})
+    assert_ok(result, "read current model collection order: %s" % fqn)
+    body = result.structured or {}
+    rows = body.get("collections", [])
+    if body.get("mode") != "list" or len(rows) != 1 or not isinstance(rows[0].get("order"), list):
+        _fail("expected one read-only model order for %s, got %r" % (fqn, body))
+    if "autosort" in rows[0]:
+        assert_autosort_notice(rows[0], message=body.get("message", ""))
+    return rows[0]
+
+
+def assert_autosort_notice(payload, governs=None, message=None):
+    """Validate the shared user-owned autosort notice; presence is the capability signal."""
+    block = payload.get("autosort")
+    fields = {"plugin", "governs", "setting", "order", "effect", "userAction"}
+    if not isinstance(block, dict) or set(block) != fields:
+        _fail("expected a complete autosort notice, got %r" % block)
+    assert block["plugin"] == "1C:Code style V8 (com.e1c.v8codestyle.autosort)", block
+    if governs is not None:
+        assert block["governs"] == governs, block
+    assert block["setting"] in ("all top-level lists", "all subordinate lists", "this list"), block
+    assert block["order"] in ("ascending, natural", "ascending, plain", "descending, natural", "descending, plain"), block
+    action = block["userAction"]
+    assert action.startswith("Autosort (1C:Code style V8) keeps this list in alphabetical order. "), block
+    assert "ask the user to turn it off for this list in Project > Properties > V8 > Metadata objects sort > Auto sort" in action, block
+    assert action.endswith("do not change this setting yourself."), block
+    assert ".prefs" not in str(block) and "topObjects" not in str(block) and "subordinateObjects" not in str(block), block
+    text = payload.get("message", "") if message is None else message
+    assert action in text and block["effect"] in text, (block, text)
+    return block
+
+
+def autosort_descending(state):
+    return "autosort" in state and state["autosort"]["order"].startswith("descending,")
+
+
+def metadata_collection_order(project_name, fqn):
+    """Preserve stored order; get_metadata_objects is a presentation listing."""
+    return metadata_collection_state(project_name, fqn)["order"]
 
 
 # ── Markdown table parsing (this project's OWN presentation contract) ──────────
@@ -2598,6 +2859,10 @@ def reset_model(projects=None):
     for project in requested:
         if project not in FIXTURE_REL_BY_PROJECT:
             raise ValueError("not a fixture project: %r" % project)
+    # A base clean restarts its dependent models. Respect the fixture dependency order,
+    # regardless of the caller's set/alphabetical order, then verify each dependent last.
+    requested = tuple(project for project in ALL_FIXTURE_PROJECTS if project in requested)
+    for project in requested:
         if project == PROJECT:
             _reset_model_project(project, reset_fixture, _baseline_mismatch)
         else:
@@ -2820,6 +3085,20 @@ def buffered_form_render_at_startup():
 # ──────────────────────────────────────────────────────────────────────────────
 # Assertions
 # ──────────────────────────────────────────────────────────────────────────────
+def snapshot_application_bindings(project):
+    """Observe default and RuntimeClient IDs for infobase refusal/validation checks."""
+    applications = call("get_applications", {"projectName": project})
+    assert_ok(applications, "snapshot application default")
+    configurations = call("list_configurations", {"projectName": project, "type": "client"})
+    assert_ok(configurations, "snapshot RuntimeClient bindings")
+    assert isinstance(applications.structured, dict), applications.structured
+    assert isinstance(configurations.structured, dict), configurations.structured
+    configs = configurations.structured["configurations"]
+    assert isinstance(configs, list), configs
+    return (applications.structured.get("defaultApplicationId"),
+            sorted((entry["name"], entry.get("applicationId")) for entry in configs))
+
+
 def assert_ok(result, ctx=""):
     if result.is_error:
         _fail("expected success but tool returned isError [%s]: %s" % (ctx, result.error_text()[:300]))
@@ -3080,10 +3359,11 @@ def poll_disk_contains(rel_path, substr, timeout=10, ctx=""):
     return poll_disk_contains_all(rel_path, [substr], timeout=timeout, ctx=ctx)
 
 
-def poll_disk_contains_all(rel_path, substrs, timeout=10, ctx="", fixture_rel=None):
+def poll_disk_contains_all(rel_path, substrs, timeout=10, ctx="", fixture_rel=None, *, check=None):
     """Poll until ONE read of a named fixture file contains every substring in substrs, and return
     that read. Polling each needle separately proves each was present at SOME moment, not that one
-    snapshot of the file holds them all.
+    snapshot of the file holds them all. An optional check(text) must also accept that same read;
+    use it for structural comparisons that cannot be expressed as substring checks.
 
     rel_path is relative to the BASE project by default, or to the fixture path `fixture_rel` names
     (TESTS_PROJECT_REL for the extension, say) - one poll for every fixture, not a copy per root.
@@ -3100,7 +3380,7 @@ def poll_disk_contains_all(rel_path, substrs, timeout=10, ctx="", fixture_rel=No
         try:
             with open(full, encoding="utf-8", errors="replace") as f:
                 last = f.read()
-            if all(s in last for s in substrs):
+            if all(s in last for s in substrs) and (check is None or check(last)):
                 return last
         except FileNotFoundError:
             last = "(file does not exist yet)"
@@ -3108,6 +3388,8 @@ def poll_disk_contains_all(rel_path, substrs, timeout=10, ctx="", fixture_rel=No
             last = "(file could not be read yet: %s)" % e
         time.sleep(0.5)
     missing = [s for s in substrs if s not in last]
+    if check is not None and not missing:
+        _fail("expected %s to pass its content check [%s]; it holds:\n%s" % (shown, ctx, last[:700]))
     _fail("expected %s to contain %r [%s]; it holds:\n%s"
           % (shown, missing[0] if len(missing) == 1 else missing, ctx, last[:700]))
 
@@ -3420,8 +3702,11 @@ def wait_until_no_running_launch(config_name=None, timeout=60):
 REGISTRY = []
 
 
-def e2e_test(tool, kind="read", last=False):
+def e2e_test(tool, kind="read", last=False, first=False):
     """Register a test function. kind: 'read' | 'write' | 'action'.
+
+    first=True runs before ordinary tests within the selected shard. Use it only for a test
+    whose exact pin needs an EDT that no earlier test has changed.
 
     last=True defers the test to the END of the run. Use it only when the SUBJECT of the test
     is the run itself rather than one tool's behaviour - the EDT-log ratchet, which can only
@@ -3431,6 +3716,6 @@ def e2e_test(tool, kind="read", last=False):
     """
     def deco(fn):
         REGISTRY.append({"func": fn, "tool": tool, "kind": kind, "name": fn.__name__,
-                         "last": last})
+                         "last": last, "first": first})
         return fn
     return deco

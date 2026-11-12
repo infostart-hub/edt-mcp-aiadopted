@@ -1,0 +1,36 @@
+{
+  "name": "edt-mcp",
+  "version": "1.0.0",
+  "description": "Connects Codex to a running 1C:EDT instance through the EDT MCP Server.",
+  "author": {
+    "name": "DitriXNew",
+    "url": "https://github.com/DitriXNew"
+  },
+  "homepage": "https://github.com/DitriXNew/EDT-MCP",
+  "repository": "https://github.com/infostart-hub/edt-mcp-aiadopted",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "1c",
+    "edt",
+    "mcp",
+    "agent-plugin"
+  ],
+  "mcpServers": "./mcp.json",
+  "interface": {
+    "displayName": "1C:EDT MCP",
+    "shortDescription": "Work with projects open in 1C:EDT",
+    "longDescription": "Connect Codex to the EDT MCP Server running inside 1C:EDT and use its project, metadata, validation, navigation, and configuration tools.",
+    "developerName": "DitriXNew",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/DitriXNew/EDT-MCP",
+    "defaultPrompt": [
+      "Show the projects currently open in 1C:EDT"
+    ],
+    "screenshots": []
+  }
+}

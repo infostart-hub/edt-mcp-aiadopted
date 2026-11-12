@@ -21,6 +21,10 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import com._1c.g5.v8.bm.integration.IBmModel;
+import com._1c.g5.v8.dt.core.platform.IBmModelManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
+import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
 import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider;
@@ -63,6 +67,20 @@ public class MetadataWriteContextReasonTest
             "com._1c.g5.v8.dt.core.V8ConfigurationNature" });
         when(project.getDescription()).thenReturn(description);
         tool = mock(AbstractMetadataWriteTool.class, CALLS_REAL_METHODS);
+    }
+
+    private void registerActiveModel(IDtProject dtProject)
+    {
+        when(manager.getDtProject(project)).thenReturn(dtProject);
+        IV8ProjectManager v8Manager = mock(IV8ProjectManager.class);
+        IV8Project v8Project = mock(IV8Project.class);
+        IBmModelManager bmManager = mock(IBmModelManager.class);
+        when(activator.getV8ProjectManager()).thenReturn(v8Manager);
+        when(activator.getBmModelManager()).thenReturn(bmManager);
+        when(v8Manager.getProject(project)).thenReturn(v8Project);
+        when(v8Project.getDtProject()).thenReturn(dtProject);
+        when(v8Manager.isServiceContextActive(v8Project)).thenReturn(true);
+        when(bmManager.getModel(dtProject)).thenReturn(mock(IBmModel.class));
     }
 
     @After
@@ -129,7 +147,7 @@ public class MetadataWriteContextReasonTest
     public void aQuietRegisteredStartingContextKeepsTheBaseWriteRefusal()
     {
         IDtProject dtProject = mock(IDtProject.class);
-        when(manager.getDtProject(project)).thenReturn(dtProject);
+        registerActiveModel(dtProject);
         IWorkspaceOrchestrator orchestrator = mock(IWorkspaceOrchestrator.class);
         when(activator.getWorkspaceOrchestrator()).thenReturn(orchestrator);
         IDerivedDataManagerProvider provider = mock(IDerivedDataManagerProvider.class);

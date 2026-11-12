@@ -25,7 +25,6 @@ import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
 import org.eclipse.emf.ecore.InternalEObject;
 
-import com._1c.g5.v8.bm.core.BmUriUtil;
 import com._1c.g5.v8.dt.mcore.BinaryQualifiers;
 import com._1c.g5.v8.dt.mcore.ColorValue;
 import com._1c.g5.v8.dt.mcore.CommandGroupCategory;
@@ -51,6 +50,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.StyleItem;
 import com._1c.g5.v8.dt.metadata.mdclass.XDTOPackage;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Introspects the ASSIGNABLE properties of a metadata {@link EObject}: which structural features a
@@ -185,6 +185,11 @@ public final class MetadataPropertyIntrospector
         EXCLUDED_COMMANDS
     }
 
+    /** One collection element's display name and complete comparison identity. */
+    public record CollectionItem(String text, String identity)
+    {
+    }
+
     /** The introspected schema of one assignable property. */
     public static final class PropertyInfo
     {
@@ -194,6 +199,9 @@ public final class MetadataPropertyIntrospector
         public final ValueKind valueKind;
         /** The current value rendered as text (may be {@code null} / empty). */
         public final String currentValue;
+
+        /** Collection elements for bounded table rendering; null for scalar or unreadable values. */
+        public final List<CollectionItem> collectionItems;
         /**
          * The same value in the form that answers "is this the SAME value?", which for some kinds
          * is not the form that answers "what should a reader see?".
@@ -285,9 +293,18 @@ public final class MetadataPropertyIntrospector
             List<String> allowedValues, EStructuralFeature feature, boolean onExtInfo,
             boolean readFailed)
         {
+            this(name, valueKind, currentValue, valueIdentity, allowedValues, feature, onExtInfo,
+                readFailed, null);
+        }
+
+        PropertyInfo(String name, ValueKind valueKind, String currentValue, String valueIdentity,
+            List<String> allowedValues, EStructuralFeature feature, boolean onExtInfo,
+            boolean readFailed, List<CollectionItem> collectionItems)
+        {
             this.name = name;
             this.valueKind = valueKind;
             this.currentValue = currentValue;
+            this.collectionItems = collectionItems == null ? null : List.copyOf(collectionItems);
             // A kind with nothing to qualify identifies itself by what it renders. The fallback
             // lives here rather than at each call site so the two fields cannot drift apart.
             this.valueIdentity = valueIdentity == null ? currentValue : valueIdentity;
@@ -352,7 +369,7 @@ public final class MetadataPropertyIntrospector
             }
             Rendered current = renderCurrent(obj, feature, kind);
             result.add(new PropertyInfo(propertyName(feature, kind), kind, current.text, current.identity,
-                allowedValuesFor(obj, feature, kind), feature, false, current.failed));
+                allowedValuesFor(obj, feature, kind), feature, false, current.failed, current.items));
         }
         return result;
     }
@@ -494,7 +511,7 @@ public final class MetadataPropertyIntrospector
             return null;
         }
         return new PropertyInfo(onExt.name, onExt.valueKind, onExt.currentValue, onExt.valueIdentity,
-            onExt.allowedValues, onExt.feature, true, onExt.readFailed);
+            onExt.allowedValues, onExt.feature, true, onExt.readFailed, onExt.collectionItems);
     }
 
     /**
@@ -608,7 +625,7 @@ public final class MetadataPropertyIntrospector
             {
                 Rendered current = extInfo != null ? renderCurrent(extInfo, feature, kind) : Rendered.ABSENT;
                 result.add(new PropertyInfo(feature.getName(), kind, current.text, current.identity,
-                    allowedValuesFor(extInfo, feature, kind), feature, true, current.failed));
+                    allowedValuesFor(extInfo, feature, kind), feature, true, current.failed, current.items));
             }
         }
         return result;
@@ -977,18 +994,32 @@ public final class MetadataPropertyIntrospector
         /** No value, and nothing went wrong: the property is genuinely empty. */
         static final Rendered ABSENT = new Rendered(null, null, false);
         /** Reading or rendering threw, so nothing is known about the value. */
-        static final Rendered FAILED = new Rendered(null, null, true);
+        static final Rendered READ_FAILED = new Rendered(null, null, true);
 
         final String text;
         /** The same value as an identity; see {@link PropertyInfo#valueIdentity}. */
         final String identity;
         final boolean failed;
+        final List<CollectionItem> items;
 
         private Rendered(String text, String identity, boolean failed)
+        {
+            this(text, identity, failed, null);
+        }
+
+        private Rendered(String text, String identity, boolean failed, List<CollectionItem> items)
         {
             this.text = text;
             this.identity = identity;
             this.failed = failed;
+            this.items = items;
+        }
+
+        static Rendered array(JsonArray array)
+        {
+            List<CollectionItem> items = new ArrayList<>();
+            array.forEach(item -> items.add(new CollectionItem(item.getAsString(), item.getAsString())));
+            return new Rendered(array.toString(), array.toString(), false, items);
         }
 
         /** A rendering that identifies itself: what it shows is exactly what it is. */
@@ -1022,13 +1053,13 @@ public final class MetadataPropertyIntrospector
          *
          * @param text what a reader sees; {@code null} prints as an empty cell
          * @param identity what the value IS; a blank one cannot be told from an unset reference
-         * @return the rendering, or {@link #FAILED} when nothing at all identifies the value
+         * @return the rendering, or {@link #READ_FAILED} when nothing at all identifies the value
          */
         static Rendered present(String text, String identity)
         {
             // Not "absent": a value we cannot identify is a value we know nothing about, and the
             // empty identity an ABSENT would carry is exactly the one an unset reference carries.
-            return identity == null || identity.isEmpty() ? FAILED
+            return identity == null || identity.isEmpty() ? READ_FAILED
                 : new Rendered(text, identity, false);
         }
     }
@@ -1060,7 +1091,7 @@ public final class MetadataPropertyIntrospector
                     return Rendered.of(value instanceof org.eclipse.emf.common.util.Enumerator enumerator
                         ? enumerator.getName() : String.valueOf(value));
                 case MANY_ENUM:
-                    return Rendered.of(renderEnumList(value));
+                    return renderEnumList(value);
                 case REFERENCE:
                     return referenceTarget(value);
                 case MANY_REFERENCE:
@@ -1068,7 +1099,8 @@ public final class MetadataPropertyIntrospector
                 case FIELD_LIST:
                     return renderFieldList(value);
                 case EXCLUDED_COMMANDS:
-                    return Rendered.of(ExcludedCommandsSupport.render(value));
+                    return Rendered.array(JsonParser.parseString(ExcludedCommandsSupport.render(value))
+                        .getAsJsonArray());
                 case MCORE_VALUE_LIST:
                     // The one kind here that answers with a Rendered of its own, because it is the
                     // one whose "no text" does not mean "no value": eGet already handed back a
@@ -1109,7 +1141,7 @@ public final class MetadataPropertyIntrospector
         }
         catch (Exception e)
         {
-            return Rendered.FAILED;
+            return Rendered.READ_FAILED;
         }
     }
 
@@ -1203,13 +1235,14 @@ public final class MetadataPropertyIntrospector
         EList<?> list = (EList<?>)value;
         if (list.isEmpty())
         {
-            return Rendered.ABSENT;
+            return new Rendered(null, null, false, List.of());
         }
         // Two strings out of one walk: the reader gets the bare names, a comparison gets the same
         // targets qualified by type. Built together so they can never disagree about which
         // elements the property holds, or in which order.
         StringBuilder shown = new StringBuilder();
         StringBuilder identity = new StringBuilder();
+        List<CollectionItem> items = new ArrayList<>();
         for (Object element : list)
         {
             if (element instanceof MdObject)
@@ -1220,10 +1253,12 @@ public final class MetadataPropertyIntrospector
                     identity.append(", "); //$NON-NLS-1$
                 }
                 shown.append(((MdObject)element).getName());
-                identity.append(qualifiedName((EObject)element, ((MdObject)element).getName()));
+                String qualified = qualifiedName((EObject)element, ((MdObject)element).getName());
+                identity.append(qualified);
+                items.add(new CollectionItem(((MdObject)element).getName(), qualified));
             }
         }
-        return shown.length() > 0 ? Rendered.of(shown.toString(), identity.toString())
+        return shown.length() > 0 ? new Rendered(shown.toString(), identity.toString(), false, items)
             : Rendered.ABSENT;
     }
 
@@ -1248,7 +1283,7 @@ public final class MetadataPropertyIntrospector
      * identity is built from the type even when there is no name to hang on it.</p>
      *
      * @param value the reference value, never {@code null}
-     * @return the rendering; {@link Rendered#FAILED} only for a value with neither a name nor an
+     * @return the rendering; {@link Rendered#READ_FAILED} only for a value with neither a name nor an
      *     EClass name, which no object of a generated EMF model is
      */
     private static Rendered referenceTarget(Object value)
@@ -1392,22 +1427,22 @@ public final class MetadataPropertyIntrospector
     }
 
     /** Renders a many-valued enum to the same JSON array of literal names accepted on the wire. */
-    private static String renderEnumList(Object value)
+    private static Rendered renderEnumList(Object value)
     {
         if (!(value instanceof EList<?>))
         {
-            return null;
+            return Rendered.ABSENT;
         }
         JsonArray rendered = new JsonArray();
         for (Object element : (EList<?>)value)
         {
             if (!(element instanceof org.eclipse.emf.common.util.Enumerator))
             {
-                return null;
+                return Rendered.ABSENT;
             }
             rendered.add(((org.eclipse.emf.common.util.Enumerator)element).getName());
         }
-        return rendered.toString();
+        return Rendered.array(rendered);
     }
 
     /**
@@ -1422,13 +1457,13 @@ public final class MetadataPropertyIntrospector
      * order-sensitive, because the order of the fields is part of the value.</p>
      *
      * @param value the feature value, expected to be an {@code EList}
-     * @return the rendering, or {@link Rendered#FAILED} for a list that could not be read
+     * @return the rendering, or {@link Rendered#READ_FAILED} for a list that could not be read
      */
     private static Rendered renderFieldList(Object value)
     {
         if (!(value instanceof EList<?>))
         {
-            return Rendered.FAILED;
+            return Rendered.READ_FAILED;
         }
         JsonArray rendered = new JsonArray();
         for (Object element : (EList<?>)value)
@@ -1436,17 +1471,17 @@ public final class MetadataPropertyIntrospector
             String address = FieldListSupport.addressOf(element);
             if (address == null)
             {
-                return Rendered.FAILED;
+                return Rendered.READ_FAILED;
             }
             rendered.add(address);
         }
-        return Rendered.of(rendered.toString());
+        return Rendered.array(rendered);
     }
 
     /**
      * Renders a contained mcore Value list to the same JSON array of strings accepted on the wire.
      *
-     * <h2>Why every giving-up branch here answers {@link Rendered#FAILED} and not {@code null}</h2>
+     * <h2>Why every giving-up branch here answers {@link Rendered#READ_FAILED} and not {@code null}</h2>
      * {@link #renderCurrent} has already asked {@code eGet}, and a property nobody set answered
      * {@code null} THERE, before this method was called. An empty list answers {@code []}, which is
      * a text. So by the time any branch below gives up, there IS a value: a non-empty list this
@@ -1462,18 +1497,18 @@ public final class MetadataPropertyIntrospector
      * turns an absent value into an empty cell AND an empty {@code valueIdentity}, and two sides
      * whose entries both failed to resolve then carry the same empty identity - so
      * {@code ComparisonNodeRenderer.compare} finds one distinct value and reports SAME for two
-     * lists that may name entirely different packages. {@link Rendered#FAILED} is what makes that
+     * lists that may name entirely different packages. {@link Rendered#READ_FAILED} is what makes that
      * row {@code UNDETERMINED} instead: not a claim that the sides differ, just the refusal to
      * claim they agree on something neither side was read for.
      *
      * @param value the feature's value, never {@code null}
-     * @return the JSON array, or {@link Rendered#FAILED} for a list that could not be read
+     * @return the JSON array, or {@link Rendered#READ_FAILED} for a list that could not be read
      */
     private static Rendered renderMcoreValueList(Object value)
     {
         if (!(value instanceof EList<?>))
         {
-            return Rendered.FAILED;
+            return Rendered.READ_FAILED;
         }
         JsonArray rendered = new JsonArray();
         for (Object element : (EList<?>)value)
@@ -1487,7 +1522,7 @@ public final class MetadataPropertyIntrospector
                     : resolvingGet(referenceValue, valueFeature);
                 if (!(target instanceof XDTOPackage))
                 {
-                    return Rendered.FAILED;
+                    return Rendered.READ_FAILED;
                 }
                 EObject targetObject = (EObject)target;
                 EStructuralFeature nameFeature =
@@ -1495,7 +1530,7 @@ public final class MetadataPropertyIntrospector
                 Object name = nameFeature == null ? null : resolvingGet(targetObject, nameFeature);
                 if (name == null || name.toString().isEmpty())
                 {
-                    return Rendered.FAILED;
+                    return Rendered.READ_FAILED;
                 }
                 rendered.add(McoreValueListBuilder.XDTO_PREFIX + name);
             }
@@ -1508,16 +1543,16 @@ public final class MetadataPropertyIntrospector
                     : resolvingGet(stringValue, valueFeature);
                 if (namespace == null || namespace.toString().isEmpty())
                 {
-                    return Rendered.FAILED;
+                    return Rendered.READ_FAILED;
                 }
                 rendered.add(namespace.toString());
             }
             else
             {
-                return Rendered.FAILED;
+                return Rendered.READ_FAILED;
             }
         }
-        return Rendered.of(rendered.toString());
+        return Rendered.array(rendered);
     }
 
     /** Reads a feature normally while keeping a failed proxy resolution local to its rendered value. */
@@ -1599,10 +1634,10 @@ public final class MetadataPropertyIntrospector
         }
         if (resolvedPicture instanceof CommonPicture)
         {
-            String name = resolvedPicture.eIsProxy() ? null : pictureName(resolvedPicture);
-            if (name != null)
+            String fqn = PictureValueBuilder.commonPictureFqn((CommonPicture)resolvedPicture);
+            if (fqn != null)
             {
-                return PictureValueBuilder.COMMON_PREFIX + name;
+                return fqn;
             }
             return unresolvedCommonPictureValue(proxyUri);
         }
@@ -1645,14 +1680,10 @@ public final class MetadataPropertyIntrospector
      */
     private static String unresolvedCommonPictureValue(URI proxyUri)
     {
-        if (proxyUri != null && BmUriUtil.isBmUri(proxyUri))
+        String fqn = PictureValueBuilder.commonPictureFqn(proxyUri);
+        if (fqn != null)
         {
-            String fqn = BmUriUtil.extractTopObjectFqn(proxyUri);
-            if (fqn != null && fqn.startsWith(PictureValueBuilder.COMMON_PREFIX)
-                && fqn.length() > PictureValueBuilder.COMMON_PREFIX.length())
-            {
-                return fqn;
-            }
+            return fqn;
         }
         return proxyUri == null ? "Unresolved CommonPicture reference" //$NON-NLS-1$
             : "Unresolved CommonPicture reference: " + proxyUri; //$NON-NLS-1$

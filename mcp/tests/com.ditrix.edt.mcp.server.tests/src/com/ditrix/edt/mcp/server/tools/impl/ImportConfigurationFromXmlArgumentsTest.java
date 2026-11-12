@@ -438,5 +438,8 @@ public class ImportConfigurationFromXmlArgumentsTest
 
         @Override
         public boolean hasDtProject(IProject project) { return true; }
+
+        @Override
+        public boolean isModelReady(IProject project) { return true; }
     }
 }

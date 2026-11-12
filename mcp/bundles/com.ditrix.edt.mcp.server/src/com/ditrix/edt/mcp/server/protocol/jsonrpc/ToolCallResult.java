@@ -263,6 +263,39 @@ public class ToolCallResult
      */
     private static String describeObject(JsonObject obj)
     {
+        // A successfully executed validator may reject the submitted program.
+        // Content-only clients must see that verdict and its actionable reason.
+        JsonElement valid = obj.get("valid"); //$NON-NLS-1$
+        if (valid != null && valid.isJsonPrimitive() && valid.getAsJsonPrimitive().isBoolean())
+        {
+            StringBuilder verdict = new StringBuilder("Validation: valid=").append(valid.getAsBoolean()); //$NON-NLS-1$
+            for (String key : new String[] { "validationState", "validationComplete", "errorCount", "warningCount" }) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            {
+                JsonElement value = obj.get(key);
+                if (value != null && value.isJsonPrimitive())
+                {
+                    verdict.append("; ").append(key).append("=").append(value.getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+            }
+            JsonElement issues = obj.get("issues"); //$NON-NLS-1$
+            if (issues != null && issues.isJsonArray())
+            {
+                for (JsonElement issue : issues.getAsJsonArray())
+                {
+                    if (!issue.isJsonObject())
+                    {
+                        continue;
+                    }
+                    JsonElement message = issue.getAsJsonObject().get("message"); //$NON-NLS-1$
+                    if (message != null && message.isJsonPrimitive())
+                    {
+                        verdict.append("; ").append(message.getAsString()); //$NON-NLS-1$
+                        break;
+                    }
+                }
+            }
+            return verdict.toString();
+        }
         StringBuilder sb = new StringBuilder("OK"); //$NON-NLS-1$
 
         // Highlight the first array-valued field as the primary collection count.

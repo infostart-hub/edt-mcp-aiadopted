@@ -5,9 +5,9 @@ name: E2E 2026.2
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main, master]
   push:
-    branches: [master]
+    branches: [main, master]
   workflow_dispatch: {}
 
 permissions:

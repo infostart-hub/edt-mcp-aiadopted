@@ -75,14 +75,13 @@ public final class UpdateChecker // NOSONAR intentional singleton (Eclipse servi
     {
         String interval = readIntervalPref();
 
+        // A preference change to never must cancel an existing scheduled check too.
+        stopScheduler();
         if (PreferenceConstants.UPDATE_CHECK_NEVER.equals(interval))
         {
             Activator.logInfo("EDT MCP Server update check disabled (preference: never)"); //$NON-NLS-1$
             return;
         }
-
-        // Cancel previous scheduler if any (e.g. server restart)
-        stopScheduler();
 
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "MCP-Update-Checker"); //$NON-NLS-1$
@@ -288,7 +287,7 @@ public final class UpdateChecker // NOSONAR intentional singleton (Eclipse servi
 
     /**
      * Reads the update-check-interval preference.
-     * Falls back to {@code on_startup} when the plugin/store is unavailable.
+     * Uses the disabled default when the plugin/store is unavailable.
      */
     private static String readIntervalPref()
     {

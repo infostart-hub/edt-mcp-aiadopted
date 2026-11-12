@@ -37,6 +37,25 @@ RU_EXTERNAL_DATA_PROCESSOR = "ВнешняяОбработка"
 RU_EXTERNAL_REPORT = "ВнешнийОтчет"
 
 
+@e2e_test(tool="list_projects", kind="read")
+def test_extobj_project_is_edt_in_both_catalog_formats():
+    """External objects own a live EDT model; callers must wait for their lifecycle too."""
+    from harness import split_markdown_row
+    machine = call("list_projects", {"format": "json"})
+    assert_ok(machine, "external project in the machine catalog")
+    human = call("list_projects", {})
+    assert_ok(human, "external project in the human catalog")
+    rows = [row for row in (machine.structured or {}).get("projects", [])
+            if row.get("name") == EXT_OBJECTS_PROJECT]
+    if len(rows) != 1 or rows[0].get("edtProject") is not True:
+        _fail("external-objects project must be EDT in JSON, not hidden from readiness: %r" % rows)
+    markdown = [split_markdown_row(line) for line in human.text.splitlines()]
+    rows = [row for row in markdown if row and row[0] == EXT_OBJECTS_PROJECT]
+    if len(rows) != 1 or len(rows[0]) < 6 or rows[0][4] != "Yes":
+        _fail("external-objects project must be EDT in Markdown: %r" % rows)
+    assert_no_diff_rel(EXT_OBJECTS_REL, "listing external projects must not change disk")
+
+
 @e2e_test(tool="get_metadata_objects", kind="read")
 def test_extobj_project_lists_its_own_roots():
     """The external-objects project lists ExtProc / ExtReport — not the base config's objects.

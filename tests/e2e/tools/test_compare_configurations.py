@@ -134,34 +134,25 @@ def _started_comparison_id(result):
     return match.group(1) if match else None
 
 
-def _await_slot_taken(job_id, rounds=20, seconds=0.5):
-    """Wait until the launch has really handed the comparison to EDT.
+def _await_slot_taken(job_id, rounds=120):
+    """Require a successful report whose retained session keeps EDT's slot occupied.
 
-    A RUNNING JOB IS NOT A RUNNING COMPARISON, and that is the whole reason this helper
-    exists. `waitSeconds=0` answers the moment the job is SUBMITTED; the worker thread
-    still has two git revision resolutions, a project lookup, a scope build and the batch
-    construction to get through before it registers anything or hands EDT a batch. Until
-    it does, EDT's single slot is genuinely free and a second launch is genuinely allowed
-    - so a test that attempts one on the strength of "| status | running |" is measuring
-    the worker's head start, not the one-at-a-time rule, and fails whenever the machine
-    is slow enough for the second call to overtake the first.
-
-    The observable evidence that the slot IS taken is the launch's own progress line,
-    published immediately after the platform accepted the batch.
-
-    Returns the live comparisonId, or None when the job reached a terminal state first -
-    the slot is free again then, and the premise of the caller is gone rather than broken.
+    A historical "started" progress line survives failure/cancellation and cannot prove
+    that the comparison is still live. A DONE report does: its readable comparison tree
+    remains registered until explicitly released. Failure is a failed setup, never a skip.
     """
     for _ in range(rounds):
-        status = call("get_job_status", {"jobId": job_id, "waitSeconds": 0})
+        status = call("get_job_status", {"jobId": job_id, "waitSeconds": 1})
+        assert_ok(status, "observe the first comparison")
         text = status.text or ""
-        found = STARTED_LINE.search(text)
-        if found:
-            return found.group(1)
+        if "| status | done |" in text:
+            comparison_id = _comparison_id(status)
+            if not comparison_id:
+                raise AssertionError("first comparison ended without a readable report: " + text)
+            return comparison_id
         if "| status | running |" not in text:
-            return None
-        time.sleep(seconds)
-    return None
+            raise AssertionError("first comparison did not finish successfully: " + text)
+    raise AssertionError("first comparison produced no report within the observation budget: " + text)
 
 
 def _start(**overrides):
@@ -217,17 +208,16 @@ def test_a_second_launch_is_refused_naming_the_live_comparison():
     first = _start()
     assert_ok(first, "start the first comparison")
     job_id = _job_id(first)
+    accepted_jobs = [job_id]
     try:
-        # Waited for, not assumed: the previous version of this test attempted the second
-        # launch as soon as the JOB reported "running", which it does from the moment it is
-        # submitted. On a slow enough machine the first worker had not reached EDT yet, the
-        # slot was honestly free, the second launch was honestly accepted, and the test read
-        # that as the one-at-a-time rule being broken.
+        # A completed report retains the native session, so its slot cannot disappear
+        # between a historical progress line and this second launch.
         live_id = _await_slot_taken(job_id)
-        if live_id is None:
-            raise E2ESkip("the first comparison ended before a second could be attempted")
-
         second = _start()
+        if not second.is_error:
+            # Capture an unexpectedly accepted job BEFORE asserting the refusal. Otherwise
+            # the failure leaks that comparison into every later test in this workspace.
+            accepted_jobs.append(_job_id(second))
         error = assert_error(second, "a second comparison while one is live")
         assert_contains(error, live_id,
                         "the refusal must NAME the comparison in the way, not just say one exists")
@@ -237,7 +227,8 @@ def test_a_second_launch_is_refused_naming_the_live_comparison():
             suggests=["refused rather than queued", "one at a time"],
         )
     finally:
-        _finish(job_id)
+        for accepted in reversed(accepted_jobs):
+            _finish(accepted)
     assert_no_diff("a refused second launch must not touch the project")
 
 

@@ -12,9 +12,6 @@ import java.util.List;
 import org.eclipse.emf.common.util.Enumerator;
 
 import com._1c.g5.v8.dt.compare.model.ComparisonNode;
-import com._1c.g5.v8.dt.md.compare.ParentSupportModeComparisonNode;
-import com._1c.g5.v8.dt.md.compare.SupportSettingsComparisonNode;
-import com._1c.g5.v8.dt.md.compare.UserSupportModeComparisonNode;
 
 /**
  * Reads the three-way SUPPORT state of a compared metadata object out of the comparison tree.
@@ -107,7 +104,7 @@ public final class SupportStateReader
      */
     public static SupportState read(ComparisonNode node)
     {
-        SupportSettingsComparisonNode settings = findSettings(node);
+        ComparisonNode settings = findSettings(node);
         if (settings == null)
         {
             return null;
@@ -123,20 +120,20 @@ public final class SupportStateReader
 
         for (ComparisonNode child : children(settings))
         {
-            if (child instanceof UserSupportModeComparisonNode)
+            if (isType(child, "UserSupportModeComparisonNode"))
             {
-                UserSupportModeComparisonNode user = (UserSupportModeComparisonNode)child;
-                parentConfigurationName = text(user.getParentConfigurationName());
-                mainUser = literal(user.getMainValue());
-                otherUser = literal(user.getOtherValue());
-                ancestorUser = literal(user.getAncestorValue());
+                ComparisonNode user = child;
+                parentConfigurationName = text((String)value(user, "parentConfigurationName"));
+                mainUser = literal((Enumerator)value(user, "mainValue"));
+                otherUser = literal((Enumerator)value(user, "otherValue"));
+                ancestorUser = literal((Enumerator)value(user, "ancestorValue"));
             }
-            else if (child instanceof ParentSupportModeComparisonNode)
+            else if (isType(child, "ParentSupportModeComparisonNode"))
             {
-                ParentSupportModeComparisonNode parent = (ParentSupportModeComparisonNode)child;
-                mainParent = literal(parent.getMainValue());
-                otherParent = literal(parent.getOtherValue());
-                ancestorParent = literal(parent.getAncestorValue());
+                ComparisonNode parent = child;
+                mainParent = literal((Enumerator)value(parent, "mainValue"));
+                otherParent = literal((Enumerator)value(parent, "otherValue"));
+                ancestorParent = literal((Enumerator)value(parent, "ancestorValue"));
             }
         }
 
@@ -148,17 +145,17 @@ public final class SupportStateReader
      * Finds the support-settings node for {@code node}: the node itself when the caller expanded the
      * support-settings node directly, otherwise its first direct child of that type.
      */
-    private static SupportSettingsComparisonNode findSettings(ComparisonNode node)
+    private static ComparisonNode findSettings(ComparisonNode node)
     {
-        if (node instanceof SupportSettingsComparisonNode)
+        if (isType(node, "SupportSettingsComparisonNode"))
         {
-            return (SupportSettingsComparisonNode)node;
+            return node;
         }
         for (ComparisonNode child : children(node))
         {
-            if (child instanceof SupportSettingsComparisonNode)
+            if (isType(child, "SupportSettingsComparisonNode"))
             {
-                return (SupportSettingsComparisonNode)child;
+                return child;
             }
         }
         return null;
@@ -199,6 +196,44 @@ public final class SupportStateReader
     private static String literal(Enumerator value)
     {
         return value == null ? "" : text(value.getName()); //$NON-NLS-1$
+    }
+
+    public static boolean isAvailable()
+    {
+        try
+        {
+            Class.forName("com._1c.g5.v8.dt.md.compare.SupportSettingsComparisonNode", false,
+                SupportStateReader.class.getClassLoader());
+            return true;
+        }
+        catch (ClassNotFoundException absentOnOlderEdt) { return false; }
+    }
+
+    private static boolean isType(ComparisonNode node, String name)
+    {
+        if (node == null) return false;
+        try
+        {
+            return Class.forName("com._1c.g5.v8.dt.md.compare." + name, false,
+                SupportStateReader.class.getClassLoader()).isInstance(node);
+        }
+        catch (ClassNotFoundException absentOnOlderEdt) { return false; }
+    }
+
+    private static Object value(ComparisonNode node, String feature)
+    {
+        String name = isType(node, "UserSupportModeComparisonNode")
+            ? "UserSupportModeComparisonNode" : "ParentSupportModeComparisonNode";
+        try
+        {
+            return Class.forName("com._1c.g5.v8.dt.md.compare." + name, false,
+                SupportStateReader.class.getClassLoader())
+                .getMethod("get" + Character.toUpperCase(feature.charAt(0)) + feature.substring(1)).invoke(node);
+        }
+        catch (ReflectiveOperationException failure)
+        {
+            throw new IllegalStateException("Cannot read EDT support state: " + feature, failure);
+        }
     }
 
     private static String text(String value)

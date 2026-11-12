@@ -132,6 +132,7 @@ public final class Toolsets
             + "MCP Server Tools preference tab to enable."); //$NON-NLS-1$
 
         assign(CORE,
+            "edt_dialog",
             "list_toolsets", "enable_toolset", //$NON-NLS-1$ //$NON-NLS-2$
             "get_tool_guide", "get_server_status", "get_edt_version", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "list_projects", "list_modules", "get_module_structure", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -139,14 +140,15 @@ public final class Toolsets
             "get_metadata_objects", "get_metadata_details"); //$NON-NLS-1$ //$NON-NLS-2$
 
         assign(METADATA,
-            "create_metadata", "modify_metadata", "delete_metadata", "dcs", "business_process_route_map", "search_in_dcs", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
-            "rename_metadata_object", "adopt_metadata_object", //$NON-NLS-1$ //$NON-NLS-2$
+            "sort_metadata", "create_metadata", "modify_metadata", "delete_metadata", "dcs", "business_process_route_map", "search_in_dcs", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            "rename_metadata_object", "clone_metadata_object", "adopt_metadata_object", //$NON-NLS-1$ //$NON-NLS-2$
             "list_common_pictures", "export_common_picture", //$NON-NLS-1$ //$NON-NLS-2$
             "get_subsystem_content", "list_subsystems", //$NON-NLS-1$ //$NON-NLS-2$
             "get_configuration_properties", "list_configurations", //$NON-NLS-1$ //$NON-NLS-2$
             "create_launch_config", "delete_launch_config"); //$NON-NLS-1$ //$NON-NLS-2$
 
         assign(CODE,
+            "open_editor",
             "write_module_source", "read_method_source", "get_method_call_hierarchy", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "get_outgoing_structures", "go_to_definition", "get_symbol_info", "find_references", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "get_content_assist", "validate_query"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -179,7 +181,7 @@ public final class Toolsets
             "clean_project", "revalidate_objects", "resync_to_disk", "update_database", "delete_project", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
             "export_configuration_to_xml", "import_configuration_from_xml", "build_external_objects", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "export_configuration_to_file", //$NON-NLS-1$
-            "create_infobase", "delete_infobase", "infobase_sessions", "set_infobase_credentials", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "create_infobase", "delete_infobase", "infobase_sessions", "infobase_extensions", "set_infobase_credentials", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "create_project", //$NON-NLS-1$
             "import_project_from_file", //$NON-NLS-1$
             "get_problem_summary", "get_project_errors", "validate_xdto_package", "get_markers", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$

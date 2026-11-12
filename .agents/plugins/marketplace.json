@@ -1,0 +1,20 @@
+{
+  "name": "edt-mcp-local",
+  "interface": {
+    "displayName": "EDT MCP Local"
+  },
+  "plugins": [
+    {
+      "name": "edt-mcp",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

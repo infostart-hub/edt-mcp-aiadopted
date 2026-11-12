@@ -5,6 +5,7 @@ import glob
 import importlib.util
 import io
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -633,6 +634,113 @@ class MutationOutcomeTest(unittest.TestCase):
             "action", HARNESS.confirmed_mutation_tools()))
 
 
+class FixtureBoundaryTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def stand(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "--quiet", root], check=True,
+                           capture_output=True, text=True)
+            for rel in HARNESS.ALL_FIXTURE_RELS:
+                directory = os.path.join(root, *rel.split("/"))
+                os.makedirs(directory)
+                with open(os.path.join(directory, ".project"), "w", encoding="utf-8") as marker:
+                    marker.write("<projectDescription><name>fixture</name></projectDescription>")
+            yield root
+
+    @staticmethod
+    def load_with_env(values):
+        spec = importlib.util.spec_from_file_location("isolated_fixture_harness", HARNESS_PATH)
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, values, clear=False):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_invalid_or_undeclared_reset_paths_are_rejected_before_any_git(self):
+        for rel in ("", ".", "./", "..", "../outside", "tests", "mcp", "tests/Other",
+                    "tests/TestConfiguration/..", "tests/TestConfiguration/*", ":(top)",
+                    "--help", "C:/outside", "/outside", "tests\\TestConfiguration",
+                    " tests/TestConfiguration", "tests//TestConfiguration"):
+            with self.subTest(rel=rel), \
+                    mock.patch.object(HARNESS, "_FIXTURES_FROZEN", False), \
+                    mock.patch.object(HARNESS, "_git") as git:
+                with self.assertRaisesRegex(ValueError, "fixture"):
+                    HARNESS.reset_fixture_rel(rel)
+                git.assert_not_called()
+
+    def test_a_root_project_env_value_is_rejected_at_import(self):
+        with self.assertRaisesRegex(ValueError, "fixture"):
+            self.load_with_env({"MCP_PROJECT_REL": "."})
+
+    def test_every_revert_command_uses_the_validated_literal_fixture_path(self):
+        with mock.patch.object(HARNESS, "_git", return_value=mock.Mock(
+                returncode=0, stderr="")) as git:
+            self.assertEqual([], HARNESS._reset_rel(HARNESS.PROJECT_REL))
+        self.assertEqual([
+            mock.call("reset", "-q", "--", HARNESS.PROJECT_REL),
+            mock.call("checkout", "HEAD", "--", HARNESS.PROJECT_REL),
+            mock.call("clean", "-fd", "--", HARNESS.PROJECT_REL),
+        ], git.call_args_list)
+
+    def test_a_fixture_symlink_escape_is_rejected_before_any_git(self):
+        with self.stand() as root:
+            target = os.path.realpath(os.path.join(root, *HARNESS.PROJECT_REL.split("/")))
+            realpath = os.path.realpath
+            outside = os.path.join(os.path.dirname(root), "not-this-stand")
+            def resolve(path):
+                return outside if os.path.normcase(realpath(path)) == os.path.normcase(target) else realpath(path)
+            with mock.patch.object(HARNESS, "REPO_ROOT", root), \
+                    mock.patch.object(HARNESS.os.path, "realpath", side_effect=resolve), \
+                    mock.patch.object(HARNESS, "_git") as git:
+                with self.assertRaisesRegex(ValueError, "fixture"):
+                    HARNESS._reset_rel(HARNESS.PROJECT_REL)
+                git.assert_not_called()
+
+    def test_all_configured_paths_are_validated_before_the_first_reset(self):
+        with mock.patch.object(HARNESS, "ALL_FIXTURE_RELS", [HARNESS.PROJECT_REL, "."]), \
+                mock.patch.object(HARNESS, "_FIXTURES_FROZEN", False), \
+                mock.patch.object(HARNESS, "_git") as git:
+            with self.assertRaisesRegex(ValueError, "fixture"):
+                HARNESS.reset_all_fixtures()
+            git.assert_not_called()
+
+    def test_fixture_root_override_preserves_main_source_and_routes_git_and_reads_to_stand(self):
+        with self.stand() as root:
+            module = self.load_with_env({"MCP_FIXTURE_REPO": root})
+            self.assertEqual(os.path.realpath(root), module.REPO_ROOT)
+            self.assertEqual(os.path.realpath(os.path.join(os.path.dirname(HARNESS_PATH),
+                                                         "..", "..")), module.SOURCE_ROOT)
+            self.assertEqual(os.path.dirname(HARNESS_PATH), module.HARNESS_DIR)
+            self.assertNotEqual(module.SOURCE_ROOT, module.REPO_ROOT)
+            self.assertEqual(os.path.join(module.REPO_ROOT, *module.PROJECT_REL.split("/")),
+                             module.PROJECT_DIR)
+            for name in ("read_disk", "read_fixture_file"):
+                with self.subTest(helper=name):
+                    content = (module.read_disk(".project") if name == "read_disk" else
+                               module.read_fixture_file(module.PROJECT_REL, ".project"))
+                    self.assertIn("<name>fixture</name>", content)
+            with mock.patch.object(module.subprocess, "run", return_value=mock.Mock(
+                    returncode=0, stderr="")) as run:
+                module._reset_rel(module.PROJECT_REL)
+            self.assertEqual(3, run.call_count)
+            self.assertTrue(all(call.args[0][2] == module.REPO_ROOT for call in run.call_args_list))
+            self.assertTrue(all(call.args[0][-2:] == ["--", module.PROJECT_REL]
+                                for call in run.call_args_list))
+
+    def test_invalid_explicit_fixture_roots_never_fall_back_to_main(self):
+        with tempfile.TemporaryDirectory() as root:
+            for value in ("", ".", os.path.join(root, "missing"), root):
+                with self.subTest(root=value):
+                    with self.assertRaisesRegex(ValueError, "MCP_FIXTURE_REPO"):
+                        self.load_with_env({"MCP_FIXTURE_REPO": value})
+
+    def test_an_override_subdirectory_cannot_use_its_parent_git_repository(self):
+        with self.stand() as root:
+            child = os.path.join(root, "nested")
+            os.makedirs(child)
+            with self.assertRaisesRegex(ValueError, "MCP_FIXTURE_REPO"):
+                self.load_with_env({"MCP_FIXTURE_REPO": child})
+
+
 class FixtureResetTest(unittest.TestCase):
     # reset_all_fixtures is the revert callable INSIDE _revert_and_clean's retry loop, so the two
     # halves of its failure condition have to be pinned separately: a dirty tree alone is the race
@@ -1215,7 +1323,7 @@ class ResetSettleEvidenceTest(unittest.TestCase):
         snapshot = ("| Name | State | X | Open | EDT Project |\n"
                     "|---|---|---|---|---|\n"
                     "| P | building | - | Yes | Yes |\n")
-        polls = iter((mock.Mock(text=snapshot),
+        polls = iter((HARNESS.Result({"result": {"content": [{"type": "text", "text": snapshot}]}}),
                       HARNESS.E2ECallTimeout("list_projects timed out")))
         collected = []
 
@@ -1228,6 +1336,164 @@ class ResetSettleEvidenceTest(unittest.TestCase):
 
         self.assertEqual([snapshot], collected,
                          "the timeout must preserve the last list_projects poll that completed")
+
+
+class DependentResetReadinessTest(unittest.TestCase):
+    def test_cleaning_the_base_cannot_invalidate_an_already_verified_external_model(self):
+        state = {"external_ready": True}
+        def clean_and_verify(project, revert, verify):
+            if project == HARNESS.PROJECT:
+                state["external_ready"] = False
+            elif project == HARNESS.EXT_OBJECTS_PROJECT:
+                state["external_ready"] = True
+        with mock.patch.object(HARNESS, "_reset_model_project", side_effect=clean_and_verify), \
+                mock.patch.object(HARNESS, "_mark_model_synced"):
+            HARNESS.reset_model([HARNESS.EXT_OBJECTS_PROJECT, HARNESS.PROJECT])
+        self.assertTrue(state["external_ready"],
+                        "the base clean must precede its dependent external model reset")
+
+
+class ProjectReadinessTest(unittest.TestCase):
+    HEADER = ("| Name | State | Path | Open | EDT Project | Natures |\n"
+              "|---|---|---|---|---|---|\n")
+
+    @classmethod
+    def table(cls, *rows):
+        return cls.HEADER + "".join(
+            "| %s | %s | /w/%s | %s | %s | 1c |\n" % (name, state, name, opened, edt)
+            for name, state, opened, edt in rows)
+
+    @staticmethod
+    def result(text, *, error=False, rpc_error=None):
+        raw = {"result": {"isError": error, "content": [{"type": "text", "text": text}]}}
+        if rpc_error is not None:
+            raw["error"] = {"code": -32603, "message": rpc_error}
+        return HARNESS.Result(raw)
+
+    def wait(self, response, *, ignore_projects=()):
+        # Advance only the clock under test: no EDT and no real waiting in an isolation test.
+        clock = [0.0]
+        def sleep(seconds):
+            clock[0] += seconds
+        details, progress = [], {}
+        with mock.patch.object(HARNESS, "call", return_value=response) as call, \
+                mock.patch.object(HARNESS.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(HARNESS.time, "sleep", side_effect=sleep):
+            ready = HARNESS.wait_for_project_ready(
+                timeout=5, failure_details=details, progress=progress,
+                ignore_projects=ignore_projects)
+        return ready, details, progress, call
+
+    def test_every_non_ready_state_blocks_the_exact_project(self):
+        for state in ("importing", "unknown", "building", "not_available", "-", "", "ready-ish"):
+            with self.subTest(state=state):
+                blockers = [("stale", "stale")]
+                text = self.table(("Target", state, "Yes", "Yes"),
+                                  ("TargetExtra", "ready", "Yes", "Yes"))
+                self.assertFalse(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+                self.assertEqual([("Target", state or "<missing state>")], blockers)
+
+    def test_unreadable_or_error_text_never_certifies_readiness(self):
+        for text in ("", "Error: list_projects failed", "state: importing",
+                     "all projects ready", '{"error":"unavailable"}', self.HEADER):
+            with self.subTest(text=text):
+                blockers = []
+                self.assertFalse(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+                self.assertTrue(blockers, "an unreadable catalog needs a timeout diagnostic")
+
+    def test_a_malformed_row_cannot_hide_beside_a_ready_project(self):
+        text = self.table(("Ready", "ready", "Yes", "Yes")) + "| Missing | importing |\n"
+        blockers = []
+        self.assertFalse(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+        self.assertIn("Missing", repr(blockers))
+
+    def test_rows_without_the_project_header_do_not_count_as_evidence(self):
+        text = "| Not projects | Values | Extra | Open | EDT Project |\n" \
+               "| Target | ready | /w/Target | Yes | Yes |\n"
+        self.assertFalse(HARNESS._all_edt_projects_ready(text))
+
+    def test_unknown_open_or_edt_flags_do_not_certify_a_ready_row(self):
+        for opened, edt in (("-", "Yes"), ("Yes", "-"), ("", "Yes"), ("Yes", "")):
+            with self.subTest(opened=opened, edt=edt):
+                self.assertFalse(HARNESS._all_edt_projects_ready(
+                    self.table(("Target", "ready", opened, edt))))
+
+    def test_a_recognized_edt_nature_cannot_be_hidden_by_a_no_flag(self):
+        for nature in ("V8ConfigurationNature", "V8ExtensionNature", "V8ExternalObjectsNature"):
+            for state in ("ready", "building", "not_available"):
+                with self.subTest(nature=nature, state=state):
+                    text = self.HEADER + (
+                        "| ExternalObjects | %s | /w/external | Yes | No | %s |\n"
+                        % (state, nature))
+                    blockers = []
+                    self.assertFalse(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+                    self.assertIn("ExternalObjects", repr(blockers))
+
+    def test_known_foreign_and_closed_projects_do_not_block_ready_projects(self):
+        text = self.table(("Target", "ready", "Yes", "Yes"),
+                          ("Servers", "not_available", "Yes", "No"),
+                          ("Closed", "not_available", "No", "-"))
+        blockers = [("stale", "stale")]
+        self.assertTrue(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+        self.assertEqual([], blockers)
+
+    def test_ignoring_one_exact_project_never_ignores_another_with_the_same_prefix(self):
+        text = self.table(("Target", "ready", "Yes", "Yes"),
+                          ("Optional", "building", "Yes", "Yes"),
+                          ("OptionalExtra", "importing", "Yes", "Yes"))
+        blockers = []
+        self.assertFalse(HARNESS._all_edt_projects_ready(
+            text, not_ready=blockers, ignore={"Optional"}))
+        self.assertEqual([("OptionalExtra", "importing")], blockers)
+        self.assertTrue(HARNESS._all_edt_projects_ready(
+            text, ignore={"Optional", "OptionalExtra"}))
+
+    def test_escaped_pipe_data_does_not_shift_the_state_or_project_flags(self):
+        text = self.HEADER + "| A\\|B | importing | /w/A\\|B | Yes | Yes | 1c |\n"
+        blockers = []
+        self.assertFalse(HARNESS._all_edt_projects_ready(text, not_ready=blockers))
+        self.assertEqual([("A|B", "importing")], blockers)
+        self.assertTrue(HARNESS._all_edt_projects_ready(text, ignore={"A|B"}))
+
+    def test_an_explicit_empty_workspace_is_ready_but_missing_rows_are_not(self):
+        empty = "## Workspace Projects\n\n**Total:** 0 projects\n\n*No projects found.*\n"
+        self.assertTrue(HARNESS._all_edt_projects_ready(empty))
+        for text in (empty.replace("0 projects", "1 projects"),
+                     empty + self.table(("Target", "building", "Yes", "Yes")),
+                     "**Total:** 2 projects\n" + self.table(("Target", "ready", "Yes", "Yes"))):
+            with self.subTest(text=text):
+                self.assertFalse(HARNESS._all_edt_projects_ready(text))
+
+    def test_tool_error_cannot_override_even_a_ready_looking_table(self):
+        text = self.table(("Target", "ready", "Yes", "Yes"))
+        ready, details, progress, call = self.wait(self.result(text, error=True))
+        self.assertFalse(ready)
+        self.assertIn("list_projects", details[0])
+        self.assertIn("Target", details[0])
+        self.assertEqual(text, progress["last_list_projects"])
+        self.assertEqual(3, call.call_count, "a refused observation must keep polling to the deadline")
+
+    def test_json_rpc_error_is_not_readiness_even_if_text_claims_ready(self):
+        text = self.table(("Target", "ready", "Yes", "Yes"))
+        ready, details, _, _ = self.wait(self.result(text, rpc_error="catalog unavailable"))
+        self.assertFalse(ready)
+        self.assertIn("catalog unavailable", details[0])
+
+    def test_unknown_state_keeps_polling_and_reports_the_blocking_project(self):
+        text = self.table(("Target", "importing", "Yes", "Yes"))
+        ready, details, progress, call = self.wait(self.result(text))
+        self.assertFalse(ready)
+        self.assertIn("Target=importing", details[0])
+        self.assertEqual([[('Target', 'importing')]], progress["observed"])
+        self.assertEqual(3, call.call_count)
+
+    def test_a_positive_observation_still_returns_without_sleeping(self):
+        text = self.table(("Target", "ready", "Yes", "Yes"))
+        ready, details, progress, call = self.wait(self.result(text))
+        self.assertTrue(ready)
+        self.assertEqual([], details)
+        self.assertEqual(1, call.call_count)
+        self.assertEqual(0, progress["elapsed"])
 
 
 class WorkspaceLocatorTest(unittest.TestCase):
@@ -2888,7 +3154,8 @@ class ReadinessRowSkipTest(unittest.TestCase):
 
     def test_a_ready_v8_project_does_not_block(self):
         not_ready = []
-        self.assertTrue(HARNESS._all_edt_projects_ready(self.table("ready"), not_ready=not_ready))
+        self.assertTrue(HARNESS._all_edt_projects_ready(
+            self.table("ready").replace("| Yes | No |", "| Yes | Yes |"), not_ready=not_ready))
         self.assertEqual([], not_ready)
 
 

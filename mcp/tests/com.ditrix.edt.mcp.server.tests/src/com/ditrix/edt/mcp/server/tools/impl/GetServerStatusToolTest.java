@@ -31,6 +31,41 @@ import com.google.gson.JsonParser;
  */
 public class GetServerStatusToolTest
 {
+    @Test public void reportsExplicitHostKind() {
+        String previous = System.getProperty("eclipse.application");
+        try {
+            for (String application : new String[]{"org.eclipse.ui.ide.workbench", com.ditrix.edt.mcp.server.HostKind.APPLICATION_ID}) {
+                System.setProperty("eclipse.application", application);
+                JsonObject result = JsonParser.parseString(new GetServerStatusTool().execute(java.util.Map.of())).getAsJsonObject();
+                assertEquals(application.equals(com.ditrix.edt.mcp.server.HostKind.APPLICATION_ID) ? "HEADLESS" : "WINDOWED", result.get("hostKind").getAsString());
+            }
+        }
+        finally {
+            if (previous == null) { System.clearProperty("eclipse.application"); } else { System.setProperty("eclipse.application", previous); }
+        }
+    }
+
+    @Test public void reportsEachTransportAndNeverExposesIpcCredentials()
+    {
+        for (boolean http : new boolean[]{false, true})
+        {
+            for (boolean ipc : new boolean[]{false, true})
+            {
+                com.ditrix.edt.mcp.server.McpServer server = new com.ditrix.edt.mcp.server.McpServer() {
+                    @Override public boolean isRunning() { return http; }
+                    @Override public int getPort() { return 3210; }
+                };
+                String json = new GetServerStatusTool(() -> server, () -> ipc).execute(java.util.Map.of());
+                JsonObject snapshot = JsonParser.parseString(json).getAsJsonObject();
+                assertEquals(http || ipc, snapshot.get("running").getAsBoolean());
+                assertEquals(http, snapshot.getAsJsonObject("transports").get("http").getAsBoolean());
+                assertEquals(ipc, snapshot.getAsJsonObject("transports").get("ipc").getAsBoolean());
+                assertEquals(3210, snapshot.get("port").getAsInt());
+                assertEquals(java.util.Set.of("http", "ipc"), snapshot.getAsJsonObject("transports").keySet());
+                assertFalse(json.contains("secret")); assertFalse(json.contains("socket"));
+            }
+        }
+    }
     @Test
     public void testName()
     {
@@ -125,6 +160,16 @@ public class GetServerStatusToolTest
         assertTrue(schema.contains("\"checksFolderConfigured\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"authEnabled\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"formRenderFlags\"")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testOutputSchemaKeepsTransportsOptionalWithBothFlagsRequired()
+    {
+        JsonObject schema = JsonParser.parseString(new GetServerStatusTool().getOutputSchema()).getAsJsonObject();
+        assertEquals(JsonParser.parseString("[\"success\"]"), schema.getAsJsonArray("required"));
+        JsonObject transports = schema.getAsJsonObject("properties").getAsJsonObject("transports");
+        assertEquals("object", transports.get("type").getAsString());
+        assertEquals(JsonParser.parseString("[\"http\",\"ipc\"]"), transports.getAsJsonArray("required"));
     }
 
     @Test

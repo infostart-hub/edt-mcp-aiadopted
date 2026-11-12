@@ -15,6 +15,10 @@
         "fqn": {
           "type": "string"
         },
+        "includeReferencedPictures": {
+          "description": "Adopt referenced CommonPicture dependencies; forms only, default false",
+          "type": "boolean"
+        },
         "projectName": {
           "description": "The BASE configuration EDT project that owns the object (NOT the extension) (required)",
           "type": "string"
@@ -32,8 +36,69 @@
         "action": {
           "type": "string"
         },
+        "cascadeAttribution": {
+          "enum": [
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "cascadedCount": {
+          "type": "integer"
+        },
+        "cascadedObjects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dependencies": {
+          "properties": {
+            "commonPictures": {
+              "properties": {
+                "adopted": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "alreadyPresent": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "found": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "unresolved": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "found",
+                "adopted",
+                "alreadyPresent",
+                "unresolved"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "commonPictures"
+          ],
+          "type": "object"
+        },
         "extensionProject": {
           "type": "string"
+        },
+        "formAdopted": {
+          "type": "boolean"
         },
         "fqn": {
           "type": "string"
@@ -49,6 +114,9 @@
         },
         "success": {
           "type": "boolean"
+        },
+        "warning": {
+          "type": "string"
         },
         "writtenProjects": {
           "items": {
@@ -437,6 +505,161 @@
   },
   {
     "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Clone one metadata object with EDT's native paste semantics. Call once without confirm to preview, then repeat the same newName and transfer selection with confirm=true and expectedHash. Code text stays unchanged; incoming relations transfer only when selected. Full parameters and examples: call get_tool_guide('clone_metadata_object').",
+    "inputSchema": {
+      "properties": {
+        "confirm": {
+          "type": "boolean"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "fqn": {
+          "type": "string"
+        },
+        "newName": {
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "transfer": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "subsystem",
+                  "roleRights"
+                ],
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "owner"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectName",
+        "fqn"
+      ],
+      "type": "object"
+    },
+    "name": "clone_metadata_object",
+    "outputSchema": {
+      "properties": {
+        "action": {
+          "enum": [
+            "preview",
+            "cloned"
+          ],
+          "type": "string"
+        },
+        "codeReferencePolicy": {
+          "type": "string"
+        },
+        "codeReferences": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "fqn": {
+          "type": "string"
+        },
+        "incomingReferencePolicy": {
+          "type": "string"
+        },
+        "incomingRelations": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "modelObjects": {
+          "type": "integer"
+        },
+        "namePolicy": {
+          "type": "string"
+        },
+        "notCopied": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "persisted": {
+          "type": "boolean"
+        },
+        "referenceScanComplete": {
+          "type": "boolean"
+        },
+        "resources": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "roleMembershipPolicy": {
+          "type": "string"
+        },
+        "selectedTransfers": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sourceFqn": {
+          "type": "string"
+        },
+        "subsystemMembershipPolicy": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "supported": {
+          "type": "boolean"
+        },
+        "transferred": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "warning": {
+          "type": "string"
+        },
+        "writtenProjects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
@@ -776,7 +999,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Add a new metadata object or member to a configuration. Parameters and examples: get_tool_guide('create_metadata').",
+    "description": "Add a new metadata object or member to a configuration. Autosort places governed objects; ask the user about manual order. Parameters and examples: get_tool_guide('create_metadata').",
     "inputSchema": {
       "properties": {
         "callType": {
@@ -802,11 +1025,25 @@
         "expectedNotExists": {
           "type": "boolean"
         },
+        "formType": {
+          "enum": [
+            "OBJECT",
+            "LIST",
+            "CHOICE",
+            "RECORD",
+            "RECORD_SET"
+          ],
+          "type": "string"
+        },
         "fqn": {
           "type": "string"
         },
         "generateContent": {
           "type": "boolean"
+        },
+        "insertPosition": {
+          "description": "Optional 1-based position in the destination metadata collection. 1 is first; omit to append. Refuses values outside 1..size+1 before creation. Not applicable to form/XDTO content, predefined data or standalone external roots.",
+          "type": "integer"
         },
         "normalizeYo": {
           "description": "Normalize the Russian letter 'ё'->'е' / 'Ё'->'Е' in the new node's NAME (the trailing FQN segment) and in any synonym / comment / predefined-item description value (default true). 'ё' in a Name is flagged by the 1C standard mdo-ru-name-unallowed-letter, so normalizing on input stores a compliant name. Set false to keep 'ё' exactly as supplied.",
@@ -826,7 +1063,7 @@
           "type": "string"
         },
         "properties": {
-          "description": "Optional properties to apply at creation, as [{name, value, language?}]. For most kinds this applies 'synonym' (with optional 'language' code) and 'comment'; other property names are rejected (set them via modify_metadata). Templates also accept 'templateType': TextDocument or SpreadsheetDocument (English or Russian). A FORM CONTENT member ('...Form.<F>.<Kind>.<Name>') takes a DIFFERENT vocabulary: 'title' (with optional 'language'), 'parent' (the group to nest a visual item under), 'dataPath' / 'attribute' (the bound attribute of a Field / Table), 'command' (a Button's command) and 'type' (a Group's kind). XDTO PACKAGE MEMBERS ('XDTOPackage.<Package>.ObjectType.<Name>' / '...Property.<Name>' / '...ObjectType.<Type>.Property.<Name>') use a DIFFERENT vocabulary instead: an ObjectType takes the optional boolean flags 'open' / 'abstract' / 'mixed' / 'ordered' / 'sequenced'; a Property REQUIRES 'type' (a built-in XSD type name like 'string', the EXACT name of an ObjectType already in the same package for a same-package reference, or an object {nsUri, name}) plus the optional 'lowerBound' / 'upperBound' (integers, ObjectType-nested properties only), 'nillable' / 'fixed' (booleans, 'fixed'=true needs a 'default') and 'default' (string). A PREDEFINED item ('...Predefined.<Item>') uses yet another vocabulary: 'description' / 'code' on every owner, 'isFolder' / 'parent' on a Catalog / ChartOfCharacteristicTypes (a ChartOfAccounts nests through 'parent' too; a ChartOfCalculationTypes takes neither), plus owner-specific properties - 'valueType' (alias 'type'; same {types:[...]} shape as an mdclass attribute's 'type') on a ChartOfCharacteristicTypes item; 'accountType' / 'offBalance' / 'order' / 'accountingFlags' / 'extDimensionTypes' on a ChartOfAccounts item; 'base' / 'displaced' / 'leading' / 'actionPeriodIsBase' on a ChartOfCalculationTypes item (see the guide for which apply to each owner).",
+          "description": "Optional properties to apply at creation, as [{name, value, language?}]. For most kinds this applies 'synonym' (with optional 'language' code) and 'comment'; other property names are rejected (set them via modify_metadata). New typed metadata members also accept structured type: {types:[{kind:\"String\",length:300}]}. Templates also accept 'templateType': TextDocument or SpreadsheetDocument (English or Russian). A FORM CONTENT member ('...Form.<F>.<Kind>.<Name>') takes a DIFFERENT vocabulary: 'title' (with optional 'language'), 'parent' (the group to nest a visual item under), 'dataPath' / 'attribute' (the bound attribute of a Field / Table), 'command' (a Button's command) and 'type' (a Group's kind). XDTO PACKAGE MEMBERS ('XDTOPackage.<Package>.ObjectType.<Name>' / '...Property.<Name>' / '...ObjectType.<Type>.Property.<Name>') use a DIFFERENT vocabulary instead: an ObjectType takes the optional boolean flags 'open' / 'abstract' / 'mixed' / 'ordered' / 'sequenced'; a Property REQUIRES 'type' (a built-in XSD type name like 'string', the EXACT name of an ObjectType already in the same package for a same-package reference, or an object {nsUri, name}) plus the optional 'lowerBound' / 'upperBound' (integers, ObjectType-nested properties only), 'nillable' / 'fixed' (booleans, 'fixed'=true needs a 'default') and 'default' (string). A PREDEFINED item ('...Predefined.<Item>') uses yet another vocabulary: 'description' / 'code' on every owner, 'isFolder' / 'parent' on a Catalog / ChartOfCharacteristicTypes (a ChartOfAccounts nests through 'parent' too; a ChartOfCalculationTypes takes neither), plus owner-specific properties - 'valueType' (alias 'type'; same {types:[...]} shape as an mdclass attribute's 'type') on a ChartOfCharacteristicTypes item; 'accountType' / 'offBalance' / 'order' / 'accountingFlags' / 'extDimensionTypes' on a ChartOfAccounts item; 'base' / 'displaced' / 'leading' / 'actionPeriodIsBase' on a ChartOfCalculationTypes item (see the guide for which apply to each owner).",
           "items": {
             "type": "object"
           },
@@ -869,6 +1106,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "autosort": {
+          "type": "object"
         },
         "callType": {
           "type": "string"
@@ -1122,7 +1362,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Read, author, and losslessly XML-round-trip 1C DCS schemas, settings variants, form conditional appearance, and form dynamic lists. Call action='get' first; replace, remove and any index-addressed edit require its hash as expectedHash. Call get_tool_guide('dcs') for body shapes.",
+    "description": "Read, author, and losslessly XML-round-trip 1C DCS schemas, settings variants, form conditional appearance, and form dynamic lists. Call action='get' first; replace, remove and any index-addressed edit require its hash as expectedHash. Query autoFillFields=true fills and exports fields and parameters in this call. Writes wait for disk export. Call get_tool_guide('dcs') for body shapes.",
     "inputSchema": {
       "properties": {
         "action": {
@@ -1549,17 +1789,60 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Delete a metadata object or member (FQN-addressed). DESTRUCTIVE and CASCADING: on the md-refactoring path EDT cleans the REFERENCES to the deleted object across BSL, forms and metadata - the referring objects themselves are NOT deleted. Two-phase: call once WITHOUT confirm to preview what will be removed, then again with confirm=true to apply. A reference EDT cannot auto-clean leaves the delete BLOCKED and lists the referring objects; an EDT platform prohibition is listed separately and also blocks. force=true overrides either block and leaves only genuine incoming references dangling, but never vendor support: a delete touching an object whose support rule forbids changes is refused. EXCEPTION - an owned FORM object, a FORM member or an XDTO package member is removed straight from its container: nothing else blocks it (force is ignored) and no cross-object cascade runs, so references from elsewhere (a button's command, an XDTO type) are left broken - re-check with get_metadata_details (find_references takes TOP-level FQNs only, not these members). Parameters and examples: get_tool_guide('delete_metadata').",
+    "description": "Delete a metadata object or member (FQN-addressed). DESTRUCTIVE and CASCADING: on the md-refactoring path EDT cleans the REFERENCES to the deleted object across BSL, forms and metadata - the referring objects themselves are NOT deleted. Two-phase: call once WITHOUT confirm to preview what will be removed, then again with confirm=true to apply. A reference EDT cannot auto-clean leaves the delete BLOCKED and lists the referring objects; an EDT platform prohibition is listed separately and also blocks. force=true overrides either block and leaves only genuine incoming references dangling, but never vendor support: a delete touching an object whose support rule forbids changes is refused. EXCEPTION - an owned FORM object, a FORM member or an XDTO package member is removed straight from its container: nothing else blocks it (force is ignored) and no cross-object cascade runs, so references from elsewhere (a button's command, an XDTO type) are left broken - re-check with get_metadata_details (find_references takes TOP-level FQNs only, not these members). Use operations for atomic deletes of members of one form; preview the complete batch before confirming. Parameters and examples: get_tool_guide('delete_metadata').",
     "inputSchema": {
+      "oneOf": [
+        {
+          "required": [
+            "fqn"
+          ]
+        },
+        {
+          "required": [
+            "operations"
+          ]
+        }
+      ],
       "properties": {
+        "atomic": {
+          "type": "boolean"
+        },
         "confirm": {
           "type": "boolean"
+        },
+        "expectedHash": {
+          "description": "Optional form-attribute/column scope guard: pass the preview's contentHash on confirm=true; a changed scope refuses without writing. Omit to use the current scope. Ignored for other targets.",
+          "type": "string"
         },
         "force": {
           "type": "boolean"
         },
         "fqn": {
           "type": "string"
+        },
+        "operations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "delete"
+                ],
+                "type": "string"
+              },
+              "fqn": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "fqn"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "type": "array"
         },
         "projectName": {
           "type": "string"
@@ -1569,8 +1852,7 @@
         }
       },
       "required": [
-        "projectName",
-        "fqn"
+        "projectName"
       ],
       "type": "object"
     },
@@ -1589,6 +1871,15 @@
         "affectedReferencesCount": {
           "type": "integer"
         },
+        "applied": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "atomic": {
+          "type": "boolean"
+        },
         "blocking": {
           "type": "boolean"
         },
@@ -1599,6 +1890,24 @@
           "type": "array"
         },
         "blockingReferencesCount": {
+          "type": "integer"
+        },
+        "committed": {
+          "type": "boolean"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "errors": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "exportSubmitted": {
+          "type": "boolean"
+        },
+        "failedOperationIndex": {
           "type": "integer"
         },
         "forced": {
@@ -1613,11 +1922,36 @@
           },
           "type": "array"
         },
+        "markerCount": {
+          "type": "integer"
+        },
+        "markers": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "markersIncomplete": {
+          "type": "boolean"
+        },
+        "markersIncompleteReason": {
+          "enum": [
+            "readFailed",
+            "objectUnresolved",
+            "validationUnobservable",
+            "validationPending",
+            "checksDisabled"
+          ],
+          "type": "string"
+        },
         "message": {
           "type": "string"
         },
         "persisted": {
           "type": "boolean"
+        },
+        "persistenceState": {
+          "type": "string"
         },
         "platformProhibitions": {
           "items": {
@@ -1628,6 +1962,12 @@
         "platformProhibitionsCount": {
           "type": "integer"
         },
+        "possibleApplied": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
         "refactoringTitle": {
           "type": "string"
         },
@@ -1635,6 +1975,18 @@
           "type": "string"
         },
         "registeringFile": {
+          "type": "string"
+        },
+        "remainingState": {
+          "type": "string"
+        },
+        "rollbackPerformed": {
+          "type": "boolean"
+        },
+        "rollbackState": {
+          "type": "string"
+        },
+        "safeRetry": {
           "type": "string"
         },
         "success": {
@@ -1696,6 +2048,95 @@
           "type": "string"
         },
         "state": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Inspect open EDT modal dialogs or press an allowlisted dialog's button. List first; press only an exact returned button on an answerable dialog. Full parameters and examples: call get_tool_guide('edt_dialog').",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "press"
+          ],
+          "type": "string"
+        },
+        "button": {
+          "description": "Required for press; exact button label from list.",
+          "type": "string"
+        },
+        "dialogId": {
+          "description": "Required for press; use the id from list.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "edt_dialog",
+    "outputSchema": {
+      "properties": {
+        "button": {
+          "type": "string"
+        },
+        "dialogId": {
+          "type": "string"
+        },
+        "dialogs": {
+          "items": {
+            "properties": {
+              "answerable": {
+                "type": "boolean"
+              },
+              "buttons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "dialogId": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "dialogId",
+              "title",
+              "message",
+              "buttons",
+              "answerable"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "message": {
           "type": "string"
         },
         "success": {
@@ -3072,6 +3513,9 @@
         "formRenderFlags": {
           "type": "object"
         },
+        "hostKind": {
+          "type": "string"
+        },
         "plainTextMode": {
           "type": "boolean"
         },
@@ -3092,6 +3536,21 @@
         },
         "totalTools": {
           "type": "integer"
+        },
+        "transports": {
+          "properties": {
+            "http": {
+              "type": "boolean"
+            },
+            "ipc": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "http",
+            "ipc"
+          ],
+          "type": "object"
         }
       },
       "required": [
@@ -3426,6 +3885,134 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "List installed infobase extensions and install, update or uninstall .cfe files. DESTRUCTIVE: call once WITHOUT confirm to preview a write, then with confirm=true and expectedHash from the preview's contentHash; writes require user consent; update verification requires a changed expectedVersion. Full parameters and examples: call get_tool_guide('infobase_extensions').",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "install",
+            "update",
+            "uninstall"
+          ],
+          "type": "string"
+        },
+        "applicationId": {
+          "type": "string"
+        },
+        "cfePath": {
+          "type": "string"
+        },
+        "confirm": {
+          "type": "boolean"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "extensionName": {
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "protectionFromDangerousActions": {
+          "type": "boolean"
+        },
+        "safeMode": {
+          "type": "boolean"
+        },
+        "timeoutSeconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "projectName",
+        "applicationId"
+      ],
+      "type": "object"
+    },
+    "name": "infobase_extensions",
+    "outputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "actualState": {
+          "type": "object"
+        },
+        "applicationId": {
+          "type": "string"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "error": {
+          "type": "string"
+        },
+        "extensionInstalled": {
+          "type": "boolean"
+        },
+        "extensionName": {
+          "type": "string"
+        },
+        "extensions": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        },
+        "mutationOutcomeUnknown": {
+          "type": "boolean"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "requestedProtectionFromDangerousActions": {
+          "type": "boolean"
+        },
+        "requestedSafeMode": {
+          "type": "boolean"
+        },
+        "requiresConfirmation": {
+          "type": "boolean"
+        },
+        "stateBefore": {
+          "type": "object"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "verification": {
+          "type": "string"
+        },
+        "verificationReason": {
+          "type": "string"
+        },
+        "verificationScope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List or terminate sessions on a running standalone-server infobase. DESTRUCTIVE for terminate: pass confirm=true; bulk termination skips Designer, while its exact full UUID can target it. Full parameters and examples: call get_tool_guide('infobase_sessions').",
     "inputSchema": {
       "properties": {
@@ -3598,7 +4185,7 @@
           "type": "string"
         },
         "updateBeforeLaunch": {
-          "description": "Default true: silently apply the configuration->DB update before launching so no 'Update database?' modal blocks the call (even on a Russian-locale EDT the dialog is auto-confirmed); false skips the update and the platform may then show that modal. Ignored for Attach. A standalone-server configuration performs no database update on this route even when omitted, and an explicit true is refused - run update_database separately.",
+          "description": "Default true: silently apply the configuration->DB update before launching so no 'Update database?' modal blocks the call (even on a Russian-locale EDT the dialog is auto-confirmed); false skips the update and the platform may then show that modal; call edt_dialog to inspect and explicitly answer it. Ignored for Attach. A standalone-server configuration performs no database update on this route even when omitted, and an explicit true is refused - run update_database separately.",
           "type": "boolean"
         }
       },
@@ -3629,6 +4216,12 @@
         },
         "configurationType": {
           "type": "string"
+        },
+        "edtDialogs": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
         },
         "externalObjectName": {
           "type": "string"
@@ -4044,7 +4637,7 @@
           "type": "object"
         },
         "template": {
-          "description": "TEMPLATE FQN only: TextDocument takes {text, expectedHash?}; read text and contentHash with get_metadata_details before a guarded write. SpreadsheetDocument takes the content to author, instead of 'properties'. An object with any of: 'cells' [{row, col (both 0-based, required), text? OR parameter? (a print-time parameter name), bold?, fontSize?, hAlign? ('Left'/'Center'/'Right'/'Auto'/'Width'), vAlign? ('Top'/'Center'/'Bottom'), wrap? (true word-wraps the cell text), textOrientation? (rotation in the platform's own unit - TENTHS of a degree, 0..3600, so 90 degrees is 900), autoIndent? (0..100), autoMarkIncomplete?}]; 'merges' [{fromRow, fromCol, toRow, toCol}] merged cell ranges; 'areas' [{name, fromRow, fromCol, toRow, toCol}] named areas (for ПолучитьОбласть / Вывести output); 'columnWidths' [{col, width?, autoWidthCalculation?, widthWeightFactor? - the share of the free width, only alongside autoWidthCalculation:true}] and 'rowHeights' [{row, height}] column / row sizes. An omitted formatting key leaves that property UNSET (the cell inherits it). For textOrientation / autoIndent / autoMarkIncomplete / autoWidthCalculation / widthWeightFactor an explicit 0 / false overrides that inheritance and null counts as omitted; bold:false alone and wrap:false are the same as omitting them. Setting a cell overwrites that (row, col); the rest of the content is kept. Valid only for the matching template type; cannot be combined with 'properties' / 'content' / a Role payload.",
+          "description": "TEMPLATE FQN only: TextDocument takes {text, mode?, oldText?, expectedHash?, expectedSource?, overwrite?}. Default searchReplace requires one literal oldText match; append adds exact text; only replace creates a missing file. Replacing an existing file requires expectedHash or expectedSource from get_metadata_details, or overwrite=true. SpreadsheetDocument takes the content to author, instead of 'properties'. An object with any of: 'cells' [{row, col (both 0-based, required), replace?, text? OR parameter? (a print-time parameter name), bold?, fontSize?, hAlign? ('Left'/'Center'/'Right'/'Auto'/'Width'), vAlign? ('Top'/'Center'/'Bottom'), wrap? (true word-wraps the cell text), textOrientation? (rotation in the platform's own unit - TENTHS of a degree, 0..3600, so 90 degrees is 900), autoIndent? (0..100), autoMarkIncomplete?}]; 'merges' [{fromRow, fromCol, toRow, toCol}] merged cell ranges; 'areas' [{name, fromRow, fromCol, toRow, toCol}] named areas (for ПолучитьОбласть / Вывести output); 'columnWidths' [{col, width?, autoWidthCalculation?, widthWeightFactor? - the share of the free width, only alongside autoWidthCalculation:true}] and 'rowHeights' [{row, height}] column / row sizes. Cells MERGE: omitted properties keep their values; replace:true resets omitted cell content and formatting. Non-empty text/parameter clears the other; an empty string clears the named content. bold:false disables bold; wrap:false unsets placement (inherit). Null counts as omitted; 0/false on numeric/boolean format keys overrides inheritance. Other cells, merges and areas are kept. Valid only for the matching template type; cannot be combined with 'properties' / 'content' / a Role payload.",
           "type": "object"
         },
         "templates": {
@@ -4068,10 +4661,33 @@
           "type": "string"
         },
         "applied": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "oneOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "properties": {
+                "rights": {
+                  "type": "integer"
+                },
+                "roleProperties": {
+                  "type": "integer"
+                },
+                "templates": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "rights",
+                "templates",
+                "roleProperties"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "commands": {
           "type": "object"
@@ -4170,6 +4786,41 @@
       ],
       "type": "object"
     }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Open an EDT editor for metadata, a managed form, or BSL source. Requires Allow UI navigation in MCP Server preferences (off by default). Parameters and examples: get_tool_guide('open_editor').",
+    "inputSchema": {
+      "properties": {
+        "fqn": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "methodName": {
+          "type": "string"
+        },
+        "modulePath": {
+          "description": "Path from src/, e.g. CommonModules/MyModule/Module.bsl; pass exactly one of modulePath or fqn.",
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectName"
+      ],
+      "type": "object"
+    },
+    "name": "open_editor",
+    "outputSchema": null
   },
   {
     "annotations": {
@@ -5224,6 +5875,135 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Inspect current metadata order with mode=list, or reorder by Name, explicit order, or one sibling move. Review order-sensitive changes: register DIMENSIONS define indexes and query speed; enum values affect ORDER BY/comparisons; subsystem content affects command interface order. Web-service parameter order defines handler signatures. Other ordered collections can affect presentation or positional access. Autosort maintains governed lists; ask the user about manual order. Full parameters and examples: call get_tool_guide('sort_metadata').",
+    "inputSchema": {
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "direction": {
+          "description": "Move mode: up/down, mutually exclusive with before/after.",
+          "enum": [
+            "up",
+            "down"
+          ],
+          "type": "string"
+        },
+        "fqn": {
+          "description": "Level: Configuration, Configuration.Catalogs, Catalog.X, or Catalog.X.Attributes. TYPE/KIND tokens accept Russian/English; Names are programmatic.",
+          "type": "string"
+        },
+        "items": {
+          "description": "Explicit mode: sibling Names in desired order; unlisted members follow stably.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "Default alphabetical; list reads current order without writing. Explicit/move require a collection fqn.",
+          "enum": [
+            "alphabetical",
+            "explicit",
+            "move",
+            "list"
+          ],
+          "type": "string"
+        },
+        "objectName": {
+          "type": "string"
+        },
+        "positions": {
+          "description": "Positive move distance; default 1. Clamped at collection ends.",
+          "type": "integer"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "recursive": {
+          "description": "Default false. Alphabetical only: also order owned descendants.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "projectName",
+        "fqn"
+      ],
+      "type": "object"
+    },
+    "name": "sort_metadata",
+    "outputSchema": {
+      "properties": {
+        "alreadySorted": {
+          "type": "boolean"
+        },
+        "autosortCollectionCount": {
+          "type": "integer"
+        },
+        "autosortCollections": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "collections": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "fqn": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "persisted": {
+          "type": "boolean"
+        },
+        "sensitiveCollections": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "subCollectionCount": {
+          "type": "integer"
+        },
+        "subCollections": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "writtenProjects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Measure execution time and coverage of BSL code in a debug session. Parameters and examples: get_tool_guide('start_profiling').",
     "inputSchema": {
       "properties": {
@@ -5677,22 +6457,30 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Check a 1C query for syntax and metadata-reference errors. Parameters and examples: get_tool_guide('validate_query').",
+    "description": "Check a 1C query or stored BSL query literals for syntax and metadata-reference errors. Parameters and examples: get_tool_guide('validate_query').",
     "inputSchema": {
       "properties": {
         "dcsMode": {
           "type": "boolean"
         },
+        "method": {
+          "description": "Procedure/function name (case-insensitive); only with modulePath.",
+          "type": "string"
+        },
+        "modulePath": {
+          "description": "Stored BSL path from src/, e.g. 'CommonModules/MyModule/Module.bsl'. Exclusive with queryText; omit method to scan the whole module.",
+          "type": "string"
+        },
         "projectName": {
           "type": "string"
         },
         "queryText": {
+          "description": "Full 1C query text, e.g. 'SELECT Ref FROM Catalog.Products'. Pass exactly one of queryText or modulePath.",
           "type": "string"
         }
       },
       "required": [
-        "projectName",
-        "queryText"
+        "projectName"
       ],
       "type": "object"
     },
@@ -5705,6 +6493,9 @@
         "errorCount": {
           "type": "integer"
         },
+        "foundCount": {
+          "type": "integer"
+        },
         "infoCount": {
           "type": "integer"
         },
@@ -5714,11 +6505,53 @@
           },
           "type": "array"
         },
+        "message": {
+          "type": "string"
+        },
+        "modulePath": {
+          "type": "string"
+        },
+        "queries": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "skipped": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "skippedCount": {
+          "type": "integer"
+        },
+        "sources": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
         "success": {
           "type": "boolean"
         },
+        "unresolvedSources": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
         "valid": {
           "type": "boolean"
+        },
+        "validationComplete": {
+          "type": "boolean"
+        },
+        "validationScope": {
+          "type": "string"
+        },
+        "validationState": {
+          "type": "string"
         },
         "warningCount": {
           "type": "integer"

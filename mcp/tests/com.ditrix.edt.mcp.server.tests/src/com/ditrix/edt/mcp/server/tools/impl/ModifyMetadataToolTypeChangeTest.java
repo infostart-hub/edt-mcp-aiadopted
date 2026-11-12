@@ -125,6 +125,17 @@ public class ModifyMetadataToolTypeChangeTest
     // ==================== the type-dependent resets of a Constant / BasicFeature ====================
 
     @Test
+    public void testExistingString10AttributeCanChangeToString300()
+    {
+        CatalogAttribute attribute = designerString10Attribute();
+        TypeDescription expanded = string(300, false);
+        retype(attribute, expanded);
+        assertSame(expanded, attribute.getType());
+        assertEquals(300, attribute.getType().getStringQualifiers().getLength());
+        assertUndefined("EDT resets the fill value on an actual type change", attribute.getFillValue());
+    }
+
+    @Test
     public void testARetypeResetsTheFillValueToUndefined()
     {
         CatalogAttribute attribute = designerString10Attribute();

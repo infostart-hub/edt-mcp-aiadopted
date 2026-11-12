@@ -15,10 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
-import org.eclipse.swt.widgets.Display;
-import org.eclipse.ui.PlatformUI;
 
 import com.ditrix.edt.mcp.server.Activator;
+import com.ditrix.edt.mcp.server.HostKind;
 import com.ditrix.edt.mcp.server.preferences.ToolParameterSettings;
 import com.ditrix.edt.mcp.server.protocol.JsonSchemaBuilder;
 import com.ditrix.edt.mcp.server.protocol.JsonUtils;
@@ -30,6 +29,7 @@ import com.ditrix.edt.mcp.server.utils.FrontMatter;
 import com.ditrix.edt.mcp.server.utils.BslModuleUtils;
 import com.ditrix.edt.mcp.server.utils.InterceptionUtils;
 import com.ditrix.edt.mcp.server.utils.ProjectContext;
+import com.ditrix.edt.mcp.server.utils.ReadToolExecution;
 import com.ditrix.edt.mcp.server.utils.Refusals;
 
 /**
@@ -138,7 +138,7 @@ public class ReadModuleSourceTool implements IMcpTool
                        "'Documents/DocName/ObjectModule.bsl'").toJson(); //$NON-NLS-1$
             }
 
-            // Canonicalize the display path; retain the selector for the model footer.
+            // Canonicalize the display path; the footer uses this same resolved file.
             String canonicalModulePath = BslModuleUtils.sourceRelativePath(file);
 
             // Read file content with UTF-8 BOM detection
@@ -184,12 +184,8 @@ public class ReadModuleSourceTool implements IMcpTool
 
             String output = formatOutput(projectName, canonicalModulePath, allLines, from, to, totalLines, truncated, contentHash);
 
-            // Extension interception (module-level, best-effort): if this module is
-            // adopted/intercepted across the base<->extension boundary, append the
-            // links below the code. The footer touches the EMF/Xtext model, so it MUST
-            // run on the UI thread like the sibling code tools (read_method_source /
-            // get_module_structure) - the rest of this read is plain file I/O off-thread.
-            String interception = interceptionFooterOnUi(project, modulePath);
+            // Keep the optional model footer on the windowed path; file reads also work without it.
+            String interception = interceptionFooterOnUi(file);
             return interception != null ? output + interception : output;
         }
         catch (Exception e)
@@ -262,21 +258,13 @@ public class ReadModuleSourceTool implements IMcpTool
         return fm.wrapContent(sb.toString());
     }
 
-    /**
-     * Computes the module-level extension-interception footer on the UI thread.
-     * Loading the BSL module and navigating the platform interception service touch
-     * the EMF/Xtext model, which must happen on the UI thread (the sibling code tools
-     * read_method_source / get_module_structure already do their model access there).
-     * The rest of this tool is plain file I/O and stays off-thread. Best-effort: any
-     * failure (model not indexed, no display) yields {@code null} and the footer is
-     * simply omitted, leaving the code read unaffected.
-     *
-     * @param project the project handle
-     * @param modulePath the original module selector (source-relative or absolute)
-     * @return the markdown footer, or {@code null} when there is none / on failure
-     */
-    private static String interceptionFooterOnUi(IProject project, String modulePath)
+    /** Optional windowed enrichment for the file already selected by the caller. */
+    private static String interceptionFooterOnUi(IFile file)
     {
+        if (HostKind.current() == HostKind.HEADLESS)
+        {
+            return null;
+        }
         AtomicReference<String> ref = new AtomicReference<>();
         AtomicReference<RuntimeException> failure = new AtomicReference<>();
         CountDownLatch finished = new CountDownLatch(1);
@@ -284,7 +272,8 @@ public class ReadModuleSourceTool implements IMcpTool
         Runnable task = () -> runFooterTaskUnlessExpired(expired, finished, () -> {
             try
             {
-                ref.set(InterceptionUtils.moduleFooter(BslModuleUtils.loadModule(project, modulePath)));
+                ref.set(ReadToolExecution.read(file.getProject(), NAME,
+                    () -> InterceptionUtils.moduleFooter(BslModuleUtils.loadModule(file))));
             }
             catch (RuntimeException e)
             {
@@ -293,14 +282,8 @@ public class ReadModuleSourceTool implements IMcpTool
         });
         try
         {
-            Display display = PlatformUI.getWorkbench().getDisplay();
-            if (display.getThread() == Thread.currentThread())
+            if (!ReadToolExecution.dispatchAsync(task))
             {
-                task.run();
-            }
-            else
-            {
-                display.asyncExec(task);
                 String result = awaitComputedValue(ref, finished,
                     INTERCEPTION_FOOTER_TIMEOUT_SECONDS, TimeUnit.SECONDS, expired);
                 if (expired.get() || Thread.currentThread().isInterrupted())

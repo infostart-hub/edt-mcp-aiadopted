@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MCP Server for EDT
  * Copyright (C) 2025 DitriX (https://github.com/DitriXNew)
  * Licensed under AGPL-3.0-or-later
@@ -20,39 +20,39 @@ import org.eclipse.ui.model.IWorkbenchAdapter;
 /**
  * Utility class for working with Navigator collection adapters.
  * Uses MethodHandle for better performance than reflection.
- * 
+ *
  * <p>This class caches MethodHandles for frequently used methods to avoid
  * repeated reflection lookups.</p>
  */
 public final class CollectionAdapterUtils {
-    
+
     // Package-visible so GroupNavigatorContentDeclarationTest checks the declared trigger against
     // the SAME class this matcher looks for, instead of a second literal that could drift from it.
-    static final String COLLECTION_ADAPTER_CLASS_NAME = 
+    static final String COLLECTION_ADAPTER_CLASS_NAME =
         "com._1c.g5.v8.dt.navigator.adapters.CollectionNavigatorAdapterBase";
-    
+
     /**
      * Cache for getModelObjectName MethodHandles by class.
      */
     private static final Map<Class<?>, MethodHandle> MODEL_OBJECT_NAME_CACHE = new ConcurrentHashMap<>();
-    
+
     /**
      * Cache for getParent MethodHandles by class.
      */
     private static final Map<Class<?>, MethodHandle> GET_PARENT_CACHE = new ConcurrentHashMap<>();
-    
+
     /**
      * Marker for classes without the method.
      */
     private static final MethodHandle NO_METHOD = null;
-    
+
     private CollectionAdapterUtils() {
         // Utility class
     }
-    
+
     /**
      * Checks if the element is a collection adapter.
-     * 
+     *
      * @param element the element to check
      * @return true if it's a collection adapter
      */
@@ -69,10 +69,10 @@ public final class CollectionAdapterUtils {
         }
         return false;
     }
-    
+
     /**
      * Gets the project from a navigator adapter.
-     * 
+     *
      * @param adapter the adapter
      * @return the project or null
      */
@@ -82,11 +82,11 @@ public final class CollectionAdapterUtils {
         }
         return null;
     }
-    
+
     /**
      * Gets the model object name (collection type) from an adapter.
      * Uses cached MethodHandle for performance.
-     * 
+     *
      * @param adapter the adapter
      * @return the model object name or null
      */
@@ -197,12 +197,12 @@ public final class CollectionAdapterUtils {
         }
         return null;
     }
-    
+
     /**
      * Gets the collection path for a collection adapter.
      * Only returns top-level collection types.
      * Returns null for nested collections.
-     * 
+     *
      * @param adapter the adapter
      * @return the collection path or null
      */
@@ -211,29 +211,29 @@ public final class CollectionAdapterUtils {
         if (modelObjectName == null) {
             return null;
         }
-        
+
         // Check if this is a nested collection
         if (hasEObjectParent(adapter)) {
             return null;
         }
-        
+
         return modelObjectName;
     }
-    
+
     /**
      * Gets the full collection path including parent FQN for nested collections.
-     * 
+     *
      * @param adapter the adapter
      * @param parentFqnExtractor function to extract FQN from parent EObject
      * @return the full path or null
      */
-    public static String getFullCollectionPath(Object adapter, 
+    public static String getFullCollectionPath(Object adapter,
             java.util.function.Function<EObject, String> parentFqnExtractor) {
         String modelObjectName = getModelObjectName(adapter);
         if (modelObjectName == null) {
             return null;
         }
-        
+
         EObject parentEObject = getParentEObject(adapter);
         if (parentEObject != null && parentFqnExtractor != null) {
             String parentFqn = parentFqnExtractor.apply(parentEObject);
@@ -241,17 +241,17 @@ public final class CollectionAdapterUtils {
                 return parentFqn + "." + modelObjectName;
             }
         }
-        
+
         return modelObjectName;
     }
-    
+
     /**
      * Checks if the adapter has an EObject parent (is a nested collection).
      */
     private static boolean hasEObjectParent(Object adapter) {
         return getParentEObject(adapter) != null;
     }
-    
+
     /**
      * Gets the parent EObject if this is a nested collection.
      */
@@ -259,17 +259,17 @@ public final class CollectionAdapterUtils {
         if (adapter == null) {
             return null;
         }
-        
+
         Class<?> clazz = adapter.getClass();
-        
+
         // Try cached MethodHandle first
         MethodHandle mh = GET_PARENT_CACHE.get(clazz);
-        
+
         if (mh == null && !GET_PARENT_CACHE.containsKey(clazz)) {
             mh = findGetParentMethod(clazz);
             GET_PARENT_CACHE.put(clazz, mh);
         }
-        
+
         if (mh != null) {
             try {
                 Object parent = mh.invoke(adapter, adapter);
@@ -280,10 +280,10 @@ public final class CollectionAdapterUtils {
                 // Ignore
             }
         }
-        
+
         return null;
     }
-    
+
     /**
      * Finds the getModelObjectName method and creates a MethodHandle.
      */
@@ -295,20 +295,20 @@ public final class CollectionAdapterUtils {
             return NO_METHOD;
         }
     }
-    
+
     /**
      * Finds the getParent method and creates a MethodHandle.
      */
     private static MethodHandle findGetParentMethod(Class<?> clazz) {
         try {
             MethodHandles.Lookup lookup = MethodHandles.lookup();
-            return lookup.findVirtual(clazz, "getParent", 
+            return lookup.findVirtual(clazz, "getParent",
                 MethodType.methodType(Object.class, Object.class));
         } catch (NoSuchMethodException | IllegalAccessException e) {
             return NO_METHOD;
         }
     }
-    
+
     /**
      * Clears the method caches. Useful for testing.
      */

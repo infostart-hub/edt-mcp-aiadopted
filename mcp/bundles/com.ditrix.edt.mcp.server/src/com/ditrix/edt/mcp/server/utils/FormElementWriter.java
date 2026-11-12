@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -51,6 +52,7 @@ import com._1c.g5.v8.dt.form.model.DataPath;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttributeColumn;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.generator.FormType;
 import com._1c.g5.v8.dt.form.model.PropertyInfo;
 import com._1c.g5.v8.dt.form.service.FormIdentifierService;
 import com._1c.g5.v8.dt.form.service.attribute.FormAttributeManagementService;
@@ -647,9 +649,6 @@ public final class FormElementWriter
     private static final String RU_FIELDS = cp(0x043f, 0x043e, 0x043b, 0x044f); // polya
     private static final String RU_BUTTONS = cp(0x043a, 0x043d, 0x043e, 0x043f, 0x043a, 0x0438); // knopki
     private static final String RU_TABLES = cp(0x0442, 0x0430, 0x0431, 0x043b, 0x0438, 0x0446, 0x044b); // tablicy
-    private static final String RU_FORM = cp(0x0444, 0x043e, 0x0440, 0x043c, 0x0430); // forma
-    private static final String RU_FORMS = cp(0x0444, 0x043e, 0x0440, 0x043c, 0x044b); // formy
-    private static final String RU_HANDLER = cp(0x043e, 0x0431, 0x0440, 0x0430, 0x0431, 0x043e, 0x0442, 0x0447, 0x0438, 0x043a); // obrabotchik
     private static final String RU_COLUMN = cp(0x043a, 0x043e, 0x043b, 0x043e, 0x043d, 0x043a, 0x0430); // kolonka
     private static final String RU_COLUMNS = cp(0x043a, 0x043e, 0x043b, 0x043e, 0x043d, 0x043a, 0x0438); // kolonki
     // The Russian platform NAMES of the value types this writer classifies are not repeated here: the
@@ -1136,7 +1135,7 @@ public final class FormElementWriter
         /**
          * @param formModel the transaction-bound editable content form
          * @param tx the active BM read transaction
-         * @return the read result (must not leak transaction-bound EObjects)
+         * @return the read result; only native form rename carries its rebindable target outside BM
          */
         T run(EObject formModel, IBmTransaction tx);
     }
@@ -1153,8 +1152,8 @@ public final class FormElementWriter
     }
 
     /**
-     * A resolved form-edit context: the project, its BM model and the MD-form (pre-transaction
-     * snapshot - re-fetched by {@link #mdFormBmId} inside the transaction for any mutation).
+     * A resolved form-edit context: project/model services and the form's stable id. Headless
+     * reads and writes re-fetch the form; only windowed callers retain the original native form.
      */
     public static final class FormEditContext
     {
@@ -1162,7 +1161,7 @@ public final class FormElementWriter
         public final IProject project;
         /** The project's BM model. */
         public final IBmModel bmModel;
-        /** Pre-transaction snapshot of the MD-form (safe for reads like {@code getName()}). */
+        /** Original native form for the windowed path; headless callers carry only its id. */
         public final MdObject mdForm;
         /** The MD-form's bmId, used to re-fetch it inside the transaction. */
         final long mdFormBmId;
@@ -1174,9 +1173,20 @@ public final class FormElementWriter
         {
             this.project = project;
             this.bmModel = bmModel;
-            this.mdForm = mdForm;
+            this.mdForm = com.ditrix.edt.mcp.server.HostKind.current()
+                == com.ditrix.edt.mcp.server.HostKind.HEADLESS ? null : mdForm;
             this.mdFormBmId = mdFormBmId;
             this.formPath = formPath;
+        }
+
+        public <T> T read(java.util.function.Function<MdObject, T> work)
+        {
+            return BmTransactions.read(bmModel, "Read editable form identity", (tx, monitor) -> {
+                var current = tx.getObjectById(mdFormBmId);
+                if (!(current instanceof MdObject form))
+                    throw new FormValidationException(ToolResult.error("Form no longer exists; resolve it again.").toJson());
+                return work.apply(form);
+            });
         }
     }
 
@@ -1214,12 +1224,21 @@ public final class FormElementWriter
     public static FormEditContext resolveForEdit(IProject project, MetadataScope scope,
         String formPath, String formNotFoundMessage)
     {
-        MdObject mdForm = FormStructureReader.resolveMdForm(scope, formPath);
-        if (mdForm == null)
-        {
-            throw new FormValidationException(ToolResult.error(formNotFoundMessage).toJson());
-        }
-        return editContext(project, mdForm, formPath);
+        FormEditContext context = resolveForEditOrNull(project, scope, formPath);
+        if (context == null) throw new FormValidationException(ToolResult.error(formNotFoundMessage).toJson());
+        return context;
+    }
+
+    /** A missing form is distinct from unavailable services; captures its identity in the resolving read. */
+    public static FormEditContext resolveForEditOrNull(IProject project, MetadataScope scope, String formPath)
+    {
+        return ReadToolExecution.readOnHost(project, "Resolve editable form", () -> {
+            MetadataScope current = com.ditrix.edt.mcp.server.HostKind.current()
+                == com.ditrix.edt.mcp.server.HostKind.HEADLESS
+                ? ProjectContext.of(project.getName()).resolveMetadataRoot().scope() : scope;
+            MdObject mdForm = FormStructureReader.resolveMdForm(current, formPath);
+            return mdForm == null ? null : editContext(project, mdForm, formPath);
+        });
     }
 
     /**
@@ -1503,6 +1522,19 @@ public final class FormElementWriter
         ITopObjectFqnGenerator fqnGenerator, Version version, boolean russianAutoNames,
         boolean generateContent, String ownerEnglishType, List<String> objectFields)
     {
+        return createForm(tx, owner, formName, synonymLanguage, synonym, comment, setAsDefault,
+            mdFactory, formFactory, fqnGenerator, version, russianAutoNames, generateContent,
+            ownerEnglishType, objectFields, FormType.OBJECT, null);
+    }
+
+    /** Creates content through the wizard generator while retaining the shared BM attachment/export path. */
+    public static String createForm(IBmTransaction tx, MdObject owner, String formName,
+        String synonymLanguage, String synonym, String comment, boolean setAsDefault,
+        IModelObjectFactory mdFactory, IModelObjectFactory formFactory, ITopObjectFqnGenerator fqnGenerator,
+        Version version, boolean russianAutoNames, boolean generateContent, String ownerEnglishType,
+        List<String> objectFields, FormType formType,
+        BiFunction<MdObject, BasicForm, EObject> generator)
+    {
         EStructuralFeature formsFeature = owner.eClass().getEStructuralFeature(KEY_FORMS);
         if (formsFeature == null || !(formsFeature.getEType() instanceof EClass))
         {
@@ -1564,16 +1596,15 @@ public final class FormElementWriter
         // renderable build if the factory is unavailable. When generateContent, the form is seeded with
         // the main Object attribute (type <ownerEnglishType>Object.<ownerName>) like the designer, plus
         // a bound input field per resolved object field (dataPath Object.<name>).
-        EObject content = createContentForm(formFactory, owner, version, russianAutoNames,
-            generateContent, ownerEnglishType, resolvedFields);
+        addToList(owner, KEY_FORMS, mdForm);
+        EObject content = generator == null
+            ? createContentForm(formFactory, owner, version, russianAutoNames,
+                generateContent, ownerEnglishType, resolvedFields)
+            : generator.apply(owner, mdForm);
 
         // (3) Link MD-form <-> content form (both directions, by feature - no typed form API).
         mdForm.eSet(MdClassPackage.Literals.BASIC_FORM__FORM, content);
         setSingleReference(content, FEATURE_MD_FORM, mdForm);
-
-        // (4) Add the MD-form to the owner's forms collection BEFORE generating the content FQN, so the
-        // MD-form has a resolvable parent chain (owner -> configuration) and therefore a resolvable FQN.
-        addToList(owner, KEY_FORMS, mdForm);
 
         // (5) Register the content form as a BM top object under the canonical external-property FQN.
         String contentFqn = fqnGenerator.generateExternalPropertyFqn(mdForm,
@@ -1597,7 +1628,14 @@ public final class FormElementWriter
         // (7) Optionally set as the owner's default object form.
         if (setAsDefault)
         {
-            setDefaultObjectForm(owner, mdForm);
+            if (formType == FormType.OBJECT)
+            {
+                setDefaultObjectForm(owner, mdForm);
+            }
+            else
+            {
+                FormGenerationSupport.setDefault(owner, mdForm, formType);
+            }
         }
         return contentFqn;
     }

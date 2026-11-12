@@ -37,6 +37,7 @@ import tempfile
 import time
 
 from harness import (
+    SOURCE_ROOT,
     call,
     assert_ok,
     assert_error,
@@ -333,7 +334,7 @@ def test_a_directory_is_refused_and_pointed_at_the_xml_tool():
 
 @e2e_test(tool=TOOL, kind="action")
 def test_an_unsupported_extension_is_refused_listing_the_supported_ones():
-    r = call(TOOL, {"filePath": os.path.join(REPO_ROOT, "CLAUDE.md"), "projectName": _REFUSED_PROJECT})
+    r = call(TOOL, {"filePath": os.path.join(SOURCE_ROOT, "CLAUDE.md"), "projectName": _REFUSED_PROJECT})
     e = assert_error(r, "an .md file")
     assert_error_quality(e, names=["CLAUDE.md"], suggests=[".cf, .cfe, .epf, .erf"],
                          ctx="the refusal lists what is supported")

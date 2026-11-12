@@ -136,7 +136,8 @@ public class ListProjectsTool implements IMcpTool
                 row.put("natures", naturesStr); //$NON-NLS-1$
                 rows.add(row);
             }
-            return ToolResult.success().put("projects", rows).toJson(); //$NON-NLS-1$
+            return ToolResult.success().put("projects", rows) //$NON-NLS-1$
+                .put("workspacePath", workspace.getRoot().getLocation().toOSString()).toJson(); //$NON-NLS-1$
         }
         catch (Exception e)
         {
@@ -242,7 +243,8 @@ public class ListProjectsTool implements IMcpTool
         try
         {
             boolean isEdtProject = project.hasNature("com._1c.g5.v8.dt.core.V8ConfigurationNature") || //$NON-NLS-1$
-                                   project.hasNature("com._1c.g5.v8.dt.core.V8ExtensionNature"); //$NON-NLS-1$
+                                   project.hasNature("com._1c.g5.v8.dt.core.V8ExtensionNature") || //$NON-NLS-1$
+                                   project.hasNature("com._1c.g5.v8.dt.core.V8ExternalObjectsNature"); //$NON-NLS-1$
             edtStatus = isEdtProject ? "Yes" : "No"; //$NON-NLS-1$ //$NON-NLS-2$
 
             String[] natures = project.getDescription().getNatureIds();

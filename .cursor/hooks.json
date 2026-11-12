@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "command": "node .cursor/hooks/edt-skill-router.cjs",
+        "matcher": "Write|Edit",
+        "timeout": 10,
+        "failClosed": false
+      }
+    ]
+  }
+}

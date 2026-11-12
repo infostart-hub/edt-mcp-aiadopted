@@ -31,7 +31,10 @@ edit metadata XML to bypass the structured surface.
 3. Consult the current guide, preview destructive or cascading effects, then
    use the smallest `create_metadata`, `modify_metadata`,
    `rename_metadata_object`, `delete_metadata`, or `adopt_metadata_object`
-   operation.
+   operation. For a new typed metadata member, include its intended structured
+   `type` in `create_metadata` when the current guide supports it; do not create
+   a default String(10) just to retype it in a second call. Changes to existing
+   types still follow the destructive-change preview and approval contract.
 4. For roles and RLS, follow the current guide's ordering and effective-rights
    model, re-read the complete affected state, and treat partial application as
    possible until readback proves otherwise.

@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import com.ditrix.edt.mcp.server.Activator;
+import com.ditrix.edt.mcp.server.HostKind;
 import com.ditrix.edt.mcp.server.preferences.ToolSettingsService;
 
 /**
@@ -104,11 +105,15 @@ public class McpToolRegistry // NOSONAR intentional singleton (Eclipse service /
     /**
      * Returns a tool by name.
      * 
-     * @param name the tool name
+     * @param name the tool name (may be null)
      * @return tool or null if not found
      */
     public IMcpTool getTool(String name)
     {
+        if (name == null)
+        {
+            return null;
+        }
         IMcpTool tool = tools.get().get(name);
         if (tool != null)
         {
@@ -144,7 +149,7 @@ public class McpToolRegistry // NOSONAR intentional singleton (Eclipse service /
     }
 
     /**
-     * Returns only enabled tools (filtered by ToolSettingsService).
+     * Returns enabled tools on every host, respecting ToolSettingsService.
      * This is the method used by the MCP protocol handler to determine
      * which tools are exposed to clients.
      *
@@ -177,8 +182,10 @@ public class McpToolRegistry // NOSONAR intentional singleton (Eclipse service /
      */
     public Collection<IMcpTool> getVisibleTools()
     {
-        Collection<IMcpTool> enabled = getEnabledTools();
-        if (!Toolsets.isProgressiveDisclosureEnabled())
+        Collection<IMcpTool> enabled = getEnabledTools().stream()
+            .filter(tool -> HostToolCapabilities.availableOnCurrentHost(tool.getName()))
+            .collect(Collectors.toUnmodifiableList());
+        if (HostKind.current() == HostKind.HEADLESS || !Toolsets.isProgressiveDisclosureEnabled())
         {
             return enabled;
         }

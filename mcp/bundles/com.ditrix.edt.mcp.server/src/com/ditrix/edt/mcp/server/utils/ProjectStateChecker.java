@@ -20,6 +20,7 @@ import java.util.function.Supplier;
 
 import org.eclipse.core.resources.IProject;
 
+import com._1c.g5.v8.bm.integration.IBmModel;
 import com._1c.g5.v8.derived.DerivedDataStatus;
 import com._1c.g5.v8.derived.IDerivedDataManager;
 import com._1c.g5.v8.derived.pipeline.DerivedDataSegmentBucket;
@@ -28,6 +29,9 @@ import com._1c.g5.v8.derived.pipeline.PipelineStatus;
 import com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider;
 import com._1c.g5.v8.dt.core.platform.IDtProject;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
+import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
+import com._1c.g5.v8.dt.core.platform.IBmModelManager;
 import com._1c.g5.v8.dt.core.platform.IWorkspaceOrchestrator;
 import com.ditrix.edt.mcp.server.Activator;
 import com.ditrix.edt.mcp.server.utils.ExtensionOriginUtils.DeclaredBaseProject;
@@ -277,7 +281,64 @@ public final class ProjectStateChecker
         IDtProject dtProject = manager == null ? null : manager.getDtProject(project);
         return classifyContext(exists, open, manager != null, dtProject != null,
             () -> hasBmModelProjectNature(project), () -> readStarted(activator, project),
-            RestartJobFailureSignal::anyRestartJobPending, () -> checkDtProjectState(dtProject));
+            RestartJobFailureSignal::anyRestartJobPending, () -> checkProjectState(project, manager, activator.getV8ProjectManager(),
+                activator.getBmModelManager(), activator.getDerivedDataManagerProvider()));
+    }
+
+    /** Same state decision with explicit EDT service boundaries for lifecycle tests. */
+    static ProjectStateResult checkProjectState(IProject project,
+        IDtProjectManager dtProjectManager, IV8ProjectManager v8ProjectManager,
+        IBmModelManager modelManager, IDerivedDataManagerProvider ddProvider)
+    {
+        if (project == null || !project.exists() || !project.isOpen())
+        {
+            return new ProjectStateResult(ProjectState.NOT_AVAILABLE, "Project is unavailable"); //$NON-NLS-1$
+        }
+        if (dtProjectManager == null || v8ProjectManager == null || modelManager == null
+            || ddProvider == null)
+        {
+            return new ProjectStateResult(ProjectState.UNKNOWN, "EDT lifecycle services are unavailable"); //$NON-NLS-1$
+        }
+        try
+        {
+            IDtProject dtProject = dtProjectManager.getDtProject(project);
+            if (dtProject == null)
+            {
+                return new ProjectStateResult(ProjectState.NOT_AVAILABLE,
+                    "EDT project context is not registered"); //$NON-NLS-1$
+            }
+            IV8Project v8Project = v8ProjectManager.getProject(project);
+            IBmModel model = modelManager.getModel(dtProject);
+            if (v8Project == null || v8Project.getDtProject() != dtProject || model == null
+                || !v8ProjectManager.isServiceContextActive(v8Project))
+            {
+                return new ProjectStateResult(ProjectState.BUILDING,
+                    "EDT project resources are loading or restarting"); //$NON-NLS-1$
+            }
+            ProjectStateResult derived = checkDtProjectState(dtProject, ddProvider);
+            if (!derived.isReady())
+            {
+                return derived;
+            }
+            // EDT 2026.1/2026.2 cache these handles for one lifecycle generation. DD has a
+            // separate provider registry and may outlive a BM context during clean/reopen.
+            // Bracket its ready answer: a changed or disposed generation cannot certify it.
+            if (dtProjectManager.getDtProject(project) != dtProject
+                || v8ProjectManager.getProject(project) != v8Project
+                || v8Project.getDtProject() != dtProject
+                || modelManager.getModel(dtProject) != model
+                || !v8ProjectManager.isServiceContextActive(v8Project))
+            {
+                return new ProjectStateResult(ProjectState.BUILDING,
+                    "EDT project context changed while checking readiness"); //$NON-NLS-1$
+            }
+            return derived;
+        }
+        catch (RuntimeException e)
+        {
+            return new ProjectStateResult(ProjectState.UNKNOWN,
+                "Cannot determine EDT project lifecycle state: " + e.getMessage()); //$NON-NLS-1$
+        }
     }
 
     /** Snapshot classification; expensive platform facts are consulted only where needed. */
@@ -442,8 +503,13 @@ public final class ProjectStateChecker
             return new ProjectStateResult(ProjectState.NOT_AVAILABLE, "DtProject is null");
         }
         
-        // Check derived data status
-        IDerivedDataManagerProvider ddProvider = Activator.getDefault().getDerivedDataManagerProvider();
+        return checkDtProjectState(dtProject, Activator.getDefault().getDerivedDataManagerProvider());
+    }
+
+    /** Derived-data query with an explicit provider; never waits for a background computation. */
+    static ProjectStateResult checkDtProjectState(IDtProject dtProject,
+        IDerivedDataManagerProvider ddProvider)
+    {
         if (ddProvider == null)
         {
             // Cannot determine state without DD provider

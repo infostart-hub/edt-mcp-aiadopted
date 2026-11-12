@@ -37,10 +37,10 @@ moment the offending tool is written.
 import os
 import re
 
-from harness import MODEL_MUTATION_TOOLS, REPO_ROOT, e2e_test, _fail
+from harness import MODEL_MUTATION_TOOLS, SOURCE_ROOT, e2e_test, _fail
 
 _TOOLS_IMPL_DIR = os.path.join(
-    REPO_ROOT, "mcp", "bundles", "com.ditrix.edt.mcp.server", "src", "com", "ditrix", "edt",
+    SOURCE_ROOT, "mcp", "bundles", "com.ditrix.edt.mcp.server", "src", "com", "ditrix", "edt",
     "mcp", "server", "tools", "impl")
 
 # How a tool declares, in Java, that it writes. THREE signals, because one was not enough: the

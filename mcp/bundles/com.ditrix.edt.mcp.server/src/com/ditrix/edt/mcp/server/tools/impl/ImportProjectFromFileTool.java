@@ -712,8 +712,8 @@ public class ImportProjectFromFileTool implements IMcpTool
         body.append(MarkdownUtils.keyValueTable("Field", "Value", rows)).append('\n'); //$NON-NLS-1$ //$NON-NLS-2$
         if (ready)
         {
-            body.append("EDT has started the project. `list_projects` may still report it `building` " //$NON-NLS-1$
-                + "for a short while, until EDT finishes computing its derived data.\n"); //$NON-NLS-1$
+            body.append("EDT has started the project and finished computing its model and derived " //$NON-NLS-1$
+                + "data. The project reports `ready` in `list_projects`.\n"); //$NON-NLS-1$
         }
         else
         {

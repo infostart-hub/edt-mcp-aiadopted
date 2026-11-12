@@ -335,7 +335,8 @@ public final class FormStructureReader
     {
         int limit = Math.min(Math.max(1, rowLimit), MAX_NODES);
         StringBuilder sb = new StringBuilder();
-        sb.append("# Form Structure: ").append(formPath).append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
+        sb.append("# Form Structure: ").append(MetadataTypeUtils.toCanonicalEnglishFqn(formPath))
+            .append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
         renderItems(sb, formModel, language, limit);
         renderAttributes(sb, formModel, language, limit);
         renderAttributeColumns(sb, formModel, language, limit, false);
@@ -608,7 +609,7 @@ public final class FormStructureReader
                 continue;
             }
             sb.append(MarkdownUtils.tableRow(nameOf(command), titleOf(command, language),
-                actionHandlerOf(command)));
+                MarkdownUtils.cappedList(actionHandlerNames(command))));
         }
         if (shown < commands.size())
         {
@@ -1125,7 +1126,7 @@ public final class FormStructureReader
                 names.add(typeItemName(type));
             }
         }
-        return String.join(", ", names); //$NON-NLS-1$
+        return MarkdownUtils.cappedList(names);
     }
 
     /**
@@ -1169,15 +1170,20 @@ public final class FormStructureReader
      */
     static String actionHandlerOf(EObject command)
     {
+        return String.join(", ", actionHandlerNames(command)); //$NON-NLS-1$
+    }
+
+    private static List<String> actionHandlerNames(EObject command)
+    {
         EObject action = getSingleReference(command, FEATURE_ACTION);
         if (action == null)
         {
-            return ""; //$NON-NLS-1$
+            return List.of();
         }
         EObject single = getSingleReference(action, FEATURE_HANDLER);
         if (single != null)
         {
-            return stringValue(getValue(single, FEATURE_NAME));
+            return List.of(stringValue(getValue(single, FEATURE_NAME)));
         }
         List<String> names = new ArrayList<>();
         for (EObject handler : getReferenceList(action, FEATURE_HANDLERS))
@@ -1188,7 +1194,7 @@ public final class FormStructureReader
                 names.add(name);
             }
         }
-        return String.join(", ", names); //$NON-NLS-1$
+        return names;
     }
 
     /**

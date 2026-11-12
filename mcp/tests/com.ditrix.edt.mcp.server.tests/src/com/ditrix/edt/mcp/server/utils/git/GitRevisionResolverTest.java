@@ -58,6 +58,25 @@ public class GitRevisionResolverTest
         assertNull("a failed revision names no work tree", revision.workTree()); //$NON-NLS-1$
     }
 
+    @Test
+    public void testFixtureHistoryDoesNotRequireTheDevelopersSigningKey() throws Exception
+    {
+        File dir = Files.createTempDirectory("revision-signing").toFile(); //$NON-NLS-1$
+        try (Git git = Git.init().setDirectory(dir).call())
+        {
+            git.getRepository().getConfig().setBoolean("commit", null, "gpgsign", true); //$NON-NLS-1$ //$NON-NLS-2$
+            RevCommit head = commit(git, dir, "a.txt", "1"); //$NON-NLS-1$ //$NON-NLS-2$
+            assertTrue(GitRevisionResolver.resolveIn(git.getRepository(), "HEAD").ok()); //$NON-NLS-1$
+            assertNull(head.getRawGpgSignature());
+            assertTrue("fixture must not change the signing policy", //$NON-NLS-1$
+                git.getRepository().getConfig().getBoolean("commit", "gpgsign", false)); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        finally
+        {
+            deleteRecursively(dir);
+        }
+    }
+
     // ==================== resolution ====================
 
     @Test
@@ -113,6 +132,7 @@ public class GitRevisionResolverTest
             git.tag()
                 .setName("v1") //$NON-NLS-1$
                 .setAnnotated(true)
+                .setSigned(false)
                 .setMessage("release") //$NON-NLS-1$
                 .setTagger(new PersonIdent(WHO, MAIL))
                 .call();
@@ -304,7 +324,8 @@ public class GitRevisionResolverTest
     {
         Files.write(new File(workTree, name).toPath(), content.getBytes(StandardCharsets.UTF_8));
         git.add().addFilepattern(name).call();
-        return git.commit().setMessage(name).setAuthor(WHO, MAIL).setCommitter(WHO, MAIL).call();
+        // Fixture history never needs the developer's signing keys. Product commits are unaffected.
+        return git.commit().setSign(false).setMessage(name).setAuthor(WHO, MAIL).setCommitter(WHO, MAIL).call();
     }
 
     /**

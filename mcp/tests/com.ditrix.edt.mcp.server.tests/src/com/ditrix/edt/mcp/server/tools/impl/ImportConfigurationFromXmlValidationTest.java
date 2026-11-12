@@ -419,5 +419,8 @@ public class ImportConfigurationFromXmlValidationTest
             IProgressMonitor monitor) { fail("ready project needs no restart"); }
         @Override
         public boolean hasDtProject(IProject project) { return true; }
+
+        @Override
+        public boolean isModelReady(IProject project) { return true; }
     }
 }

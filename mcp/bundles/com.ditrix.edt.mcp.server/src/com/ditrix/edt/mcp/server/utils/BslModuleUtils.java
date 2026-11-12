@@ -12,6 +12,8 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.File;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -591,6 +593,53 @@ public final class BslModuleUtils
             this.isFunction = isFunction;
             this.complete = complete;
         }
+    }
+
+    /**
+     * Inserts a complete method with exactly one blank line at each occupied junction.
+     * Only surrounding blank lines are normalized; method bodies and preambles stay intact.
+     *
+     * @param moduleLines current module lines
+     * @param insertionLine 0-based insertion position, before a preamble or after a terminator
+     * @param methodLines complete method, optionally surrounded by blank lines
+     * @return new module lines without leading or trailing padding at a touched module edge
+     */
+    public static List<String> insertMethodLines(List<String> moduleLines, int insertionLine,
+        List<String> methodLines)
+    {
+        int left = insertionLine;
+        while (left > 0 && moduleLines.get(left - 1).isBlank())
+        {
+            left--;
+        }
+        int right = insertionLine;
+        while (right < moduleLines.size() && moduleLines.get(right).isBlank())
+        {
+            right++;
+        }
+        int first = 0;
+        while (first < methodLines.size() && methodLines.get(first).isBlank())
+        {
+            first++;
+        }
+        int last = methodLines.size();
+        while (last > first && methodLines.get(last - 1).isBlank())
+        {
+            last--;
+        }
+
+        List<String> result = new ArrayList<>(moduleLines.subList(0, left));
+        if (left > 0)
+        {
+            result.add(""); //$NON-NLS-1$
+        }
+        result.addAll(methodLines.subList(first, last));
+        if (right < moduleLines.size())
+        {
+            result.add(""); //$NON-NLS-1$
+        }
+        result.addAll(moduleLines.subList(right, moduleLines.size()));
+        return result;
     }
 
     /**
@@ -1479,6 +1528,12 @@ public final class BslModuleUtils
      */
     public static String readFileText(IFile file) throws Exception
     {
+        return readFileText(file, false);
+    }
+
+    /** Strict decoding prevents a read/edit/write cycle from replacing malformed source bytes. */
+    public static String readFileText(IFile file, boolean strict) throws Exception
+    {
         InputStream rawIs;
         try
         {
@@ -1517,10 +1572,16 @@ public final class BslModuleUtils
                 }
                 catch (Exception ce)
                 {
+                    if (strict)
+                    {
+                        throw ce;
+                    }
                     charset = UTF_8;
                 }
             }
-            try (InputStreamReader reader = new InputStreamReader(input, charset))
+            CodingErrorAction action = strict ? CodingErrorAction.REPORT : CodingErrorAction.REPLACE;
+            try (InputStreamReader reader = new InputStreamReader(input, Charset.forName(charset).newDecoder()
+                .onMalformedInput(action).onUnmappableCharacter(action)))
             {
                 StringBuilder content = new StringBuilder();
                 char[] buffer = new char[4096];

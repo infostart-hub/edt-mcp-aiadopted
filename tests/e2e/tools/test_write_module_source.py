@@ -32,9 +32,9 @@ from harness import (
     call, assert_ok, assert_error, assert_error_quality,
     assert_contains, assert_not_contains,
     assert_diff_contains, assert_diff_paths, assert_no_diff, e2e_test, settle_or_fail,
-    calls_aborted, read_disk, PROJECT_DIR, PROJECT_REL,
+    calls_aborted, read_disk, PROJECT_DIR,
     poll_disk_contains_all, read_fixture_file, restore_extension_fixture,
-    E2EAssertion, E2ECallTimeout, PROJECT, REPO_ROOT, TESTS_PROJECT, TESTS_PROJECT_REL,
+    E2EAssertion, E2ECallTimeout, PROJECT, PROJECT_REL, REPO_ROOT, TESTS_PROJECT, TESTS_PROJECT_REL,
 )
 
 MODULE = "CommonModules/OK/Module.bsl"
@@ -62,11 +62,36 @@ def _read_module_text(module=MODULE):
     return src.text or ""
 
 
-def _assert_readback_unchanged(before, context):
+def _read_fixture_bytes(fixture_rel, rel):
+    """Read actual bytes without newline or encoding normalization, for refusal checks."""
+    with open(os.path.join(REPO_ROOT, *fixture_rel.split("/"), *rel.split("/")), "rb") as f:
+        return f.read()
+
+
+def _assert_disk_unchanged(before, context):
+    after = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
+    if after != before:
+        raise E2EAssertion("%s changed the .bsl bytes despite being rejected\nbefore: %r\nafter: %r"
+                           % (context, before[:500], after[:500]))
+
+
+def _assert_readback_unchanged(before, before_disk, context):
+    # DISK FIRST: a later MCP read must not give an asynchronous write time to catch up.
+    _assert_disk_unchanged(before_disk, context)
     after = _read_module_text()
     if after != before:
         raise E2EAssertion("%s changed the module despite being rejected\nbefore:\n%s\nafter:\n%s"
                            % (context, before[:500], after[:500]))
+
+
+def _assert_module_disk_text(expected, context):
+    actual = read_disk("src/" + MODULE)
+    # The module keeps its BOM; it is not part of the BSL text being compared.
+    if actual.startswith("\ufeff"):
+        actual = actual[1:]
+    if actual != expected:
+        raise E2EAssertion("%s: unexpected saved module\nexpected: %r\nactual: %r"
+                           % (context, expected, actual))
 
 
 def _assert_order(text, parts, context):
@@ -101,6 +126,8 @@ def _seed_targeted(source=_TARGETED_SEED):
         "mode": "replace", "source": source, "overwrite": True,
     })
     assert_ok(seeded, "seed method-targeted module")
+    assert_contains(read_disk("src/" + MODULE), source,
+                    "method-targeted seed must already be on disk before reading its hash")
     return _read_content_hash()
 
 
@@ -230,7 +257,7 @@ def test_replace_over_existing_without_precondition_is_rejected_and_no_write():
 # ──────────────────────────────────────────────────────────────────────────────
 # Lost-update + ambiguity guards — both the ACCEPT and the REJECT branches.
 # These tests seed content first (a real write), so they verify "no further change"
-# via read-back, NOT assert_no_diff (the seed already dirtied the tree).
+# via a byte-for-byte disk snapshot AND read-back (the seed already dirtied the tree).
 # ──────────────────────────────────────────────────────────────────────────────
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
@@ -263,6 +290,7 @@ def test_replace_with_stale_expectedsource_rejected_and_keeps_content():
         "mode": "replace", "source": _SEED, "overwrite": True,
     })
     assert_ok(seed, "seed content")
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     r = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replace",
         "source": "// CLOBBERED_e2e\n", "expectedSource": "STALE CONTENT THAT DOES NOT MATCH",
@@ -270,6 +298,7 @@ def test_replace_with_stale_expectedsource_rejected_and_keeps_content():
     err = assert_error(r, "replace with a stale expectedSource")
     assert_error_quality(err, suggests=["expectedSource", "match"],
                          ctx="stale expectedSource names the param + explains the concurrent edit")
+    _assert_disk_unchanged(before_disk, "test_replace_with_stale_expectedsource_rejected_and_keeps_content")
     # The rejected write must NOT have clobbered the seeded content.
     src = call("read_module_source", {"projectName": PROJECT, "modulePath": MODULE})
     assert_contains(src.text, "Значение = 1;",
@@ -288,6 +317,7 @@ def test_searchreplace_ambiguous_oldsource_rejected_and_keeps_content():
         "mode": "replace", "source": dup, "overwrite": True,
     })
     assert_ok(seed, "seed content with a duplicated fragment")
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     r = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "searchReplace",
         "oldSource": "Значение = 1;", "source": "Значение = 9;",
@@ -295,6 +325,7 @@ def test_searchreplace_ambiguous_oldsource_rejected_and_keeps_content():
     err = assert_error(r, "searchReplace with an ambiguous oldSource (2 occurrences)")
     assert_error_quality(err, suggests=["multiple times", "specific"],
                          ctx="ambiguous oldSource reports the count + asks for a more specific fragment")
+    _assert_disk_unchanged(before_disk, "test_searchreplace_ambiguous_oldsource_rejected_and_keeps_content")
     # Nothing was swapped: both originals remain, the new value never appears.
     src = call("read_module_source", {"projectName": PROJECT, "modulePath": MODULE})
     assert_not_contains(src.text, "Значение = 9;", "an ambiguous searchReplace must not partially apply")
@@ -337,6 +368,7 @@ def test_replace_with_stale_expectedhash_rejected_and_keeps_content():
         "mode": "replace", "source": _SEED, "overwrite": True,
     })
     assert_ok(seed, "seed content")
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     r = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replace",
         "source": "// CLOBBERED_via_hash_e2e\n", "expectedHash": "0123456789abcdef",
@@ -344,6 +376,7 @@ def test_replace_with_stale_expectedhash_rejected_and_keeps_content():
     err = assert_error(r, "replace with a stale expectedHash")
     assert_error_quality(err, names=["expectedHash"], suggests=["read_module_source"],
                          ctx="stale expectedHash names the param + steers to re-read")
+    _assert_disk_unchanged(before_disk, "test_replace_with_stale_expectedhash_rejected_and_keeps_content")
     src = call("read_module_source", {"projectName": PROJECT, "modulePath": MODULE})
     assert_contains(src.text, "Значение = 1;",
                     "the seeded content must survive a rejected stale-hash replace")
@@ -371,11 +404,12 @@ def test_searchreplace_with_matching_expectedhash_succeeds():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Method-targeted modes (#542). Every mutation is proven by read-back; every
-# refusal snapshots the complete read response and proves it remains identical.
+# Method-targeted modes (#542). Every mutation is proven on disk BEFORE read-back;
+# every refusal preserves the exact disk bytes and complete read response.
 
 @e2e_test(tool="write_module_source", kind="write")
 def test_method_targeted_modes_require_methodname_and_expectedhash():
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     for mode in ("replaceMethod", "insertBefore", "insertAfter"):
         missing_name = call("write_module_source", {
             "projectName": PROJECT, "modulePath": MODULE, "mode": mode,
@@ -385,6 +419,7 @@ def test_method_targeted_modes_require_methodname_and_expectedhash():
         name_error = assert_error(missing_name, "%s without methodName" % mode)
         assert_error_quality(name_error, names=["methodName"],
                              ctx="%s requires methodName" % mode)
+        _assert_disk_unchanged(before_disk, "%s without methodName" % mode)
 
         missing_hash = call("write_module_source", {
             "projectName": PROJECT, "modulePath": MODULE, "mode": mode,
@@ -394,6 +429,7 @@ def test_method_targeted_modes_require_methodname_and_expectedhash():
         assert_error_quality(hash_error, names=["expectedHash"],
                              suggests=["read_module_source", "read_method_source"],
                              ctx="%s requires a hash from a read tool" % mode)
+        _assert_disk_unchanged(before_disk, "%s without expectedHash" % mode)
     assert_no_diff("missing targeted preconditions must not write")
 
 
@@ -412,6 +448,16 @@ def test_replace_method_replaces_only_target_with_owned_preamble():
         "methodName": "Target", "expectedHash": token, "source": replacement,
     })
     assert_ok(result, "replaceMethod happy path")
+    disk = read_disk("src/" + MODULE)
+    assert_diff_contains("Value = 42;", "replaceMethod must persist the replacement immediately")
+    assert_contains(disk, replacement, "the complete replacement and owned preamble reach disk")
+    assert_contains(disk, "Procedure First() Export\nEndProcedure", "the first neighbor stays intact on disk")
+    assert_contains(disk, "Function Last() Export\n\tReturn 3;\nEndFunction",
+                    "the last neighbor stays intact on disk")
+    assert_not_contains(disk, "anchor documentation", "the old owned preamble is removed on disk")
+    assert_not_contains(disk, "Value = 1;", "the old target body is removed on disk")
+    _assert_order(disk, ("Procedure First() Export", replacement, "Function Last() Export"),
+                  "replaceMethod preserves disk method order")
 
     module = _read_module_text()
     assert_contains(module, "Procedure First() Export", "replaceMethod preserves the first neighbor")
@@ -459,7 +505,15 @@ def test_insert_before_lands_before_anchor_documentation_and_annotation():
         "source": "Procedure AddedBefore() Export\nEndProcedure\n",
     })
     assert_ok(result, "insertBefore happy path")
+    expected = _TARGETED_SEED.replace(
+        "// anchor documentation",
+        "Procedure AddedBefore() Export\nEndProcedure\n\n// anchor documentation",
+    )
+    _assert_module_disk_text(expected, "insertBefore separates both junctions")
+    assert_diff_contains("Procedure AddedBefore() Export", "insertBefore persists the method")
     module = _read_module_text()
+    assert_contains(module, "EndProcedure\n\nProcedure AddedBefore() Export\nEndProcedure\n\n"
+                    "// anchor documentation", "insertBefore read-back includes both separators")
     _assert_order(module, (
         "Procedure AddedBefore() Export", "EndProcedure",
         "// anchor documentation", "&AtServer", "Procedure Target() Export",
@@ -477,11 +531,78 @@ def test_insert_after_uses_real_terminator_not_endprocedureresult():
         "source": "Function AddedAfter() Export\n\tReturn 9;\nEndFunction\n",
     })
     assert_ok(result, "insertAfter happy path")
+    expected = _TARGETED_SEED.replace(
+        "Function Last() Export",
+        "Function AddedAfter() Export\n\tReturn 9;\nEndFunction\n\nFunction Last() Export",
+    )
+    _assert_module_disk_text(expected, "insertAfter separates both junctions")
+    assert_diff_contains("Function AddedAfter() Export", "insertAfter persists the method")
     module = _read_module_text()
+    assert_contains(module, "EndProcedure\n\nFunction AddedAfter() Export\n\tReturn 9;\n"
+                    "EndFunction\n\nFunction Last() Export",
+                    "insertAfter read-back includes both separators")
     _assert_order(module, (
         "EndProcedureResult = 1;", "Value = 1;", "EndProcedure",
         "Function AddedAfter() Export", "EndFunction", "Function Last() Export",
     ), "insertAfter must land after the complete Target method")
+
+
+@e2e_test(tool="write_module_source", kind="write")
+def test_insert_modes_collapse_existing_and_source_padding():
+    first = "Procedure First() Export\nEndProcedure\n"
+    target = "// target documentation\n&AtServer\nProcedure Target() Export\nEndProcedure\n"
+    added = "// added documentation\nProcedure Added() Export\n\nEndProcedure\n"
+    expected = first + "\n" + added + "\n" + target
+    for mode, anchor in (("insertBefore", "Target"), ("insertAfter", "First")):
+        for padding in ("", "\n\n\n"):
+            token = _seed_targeted(first + padding + target)
+            result = call("write_module_source", {
+                "projectName": PROJECT, "modulePath": MODULE, "mode": mode,
+                "methodName": anchor, "expectedHash": token,
+                "source": "\n \t\n" + added + "\n\n",
+            })
+            assert_ok(result, mode + " with surrounding blank lines")
+            _assert_module_disk_text(expected, mode + " normalizes only junctions")
+            assert_diff_contains("Procedure Added() Export", mode + " persists the method")
+
+
+@e2e_test(tool="write_module_source", kind="write")
+def test_insert_modes_do_not_pad_module_edges():
+    target = "// target documentation\nProcedure Target() Export\nEndProcedure\n"
+    added = "Procedure Added() Export\nEndProcedure\n"
+    cases = (
+        ("insertBefore", "\n\n" + target, added + "\n" + target),
+        ("insertAfter", target + "\n\n", target + "\n" + added),
+    )
+    for mode, original, expected in cases:
+        token = _seed_targeted(original)
+        result = call("write_module_source", {
+            "projectName": PROJECT, "modulePath": MODULE, "mode": mode,
+            "methodName": "Target", "expectedHash": token,
+            "source": "\n\n" + added + "\n\n",
+        })
+        assert_ok(result, mode + " at a module edge")
+        _assert_module_disk_text(expected, mode + " has no outer blank lines")
+        assert_diff_contains("Procedure Added() Export", mode + " persists at the module edge")
+
+
+@e2e_test(tool="write_module_source", kind="write")
+def test_insert_modes_keep_region_and_method_preambles():
+    head, tail = "#Region Methods\n", "#EndRegion\n"
+    target = "// target documentation\n&AtServer\nProcedure Target() Export\nEndProcedure\n"
+    added = "// added documentation\nProcedure Added() Export\nEndProcedure\n"
+    for mode, expected in (
+        ("insertBefore", head + "\n" + added + "\n" + target + tail),
+        ("insertAfter", head + target + "\n" + added + "\n" + tail),
+    ):
+        token = _seed_targeted(head + target + tail)
+        result = call("write_module_source", {
+            "projectName": PROJECT, "modulePath": MODULE, "mode": mode,
+            "methodName": "Target", "expectedHash": token, "source": added,
+        })
+        assert_ok(result, mode + " inside a region")
+        _assert_module_disk_text(expected, mode + " preserves directives and documentation")
+        assert_diff_contains("Procedure Added() Export", mode + " persists inside the region")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
@@ -494,6 +615,11 @@ def test_replace_method_supports_russian_keywords():
         "source": "Функция Цель() Экспорт\n\tВозврат 2;\nКонецФункции\n",
     })
     assert_ok(result, "replaceMethod with Russian Function keywords")
+    disk = read_disk("src/" + MODULE)
+    assert_diff_contains("Возврат 2;", "Russian replaceMethod must persist immediately")
+    assert_contains(disk, "Функция Цель() Экспорт\n\tВозврат 2;\nКонецФункции",
+                    "the complete Russian method reaches disk")
+    assert_not_contains(disk, "Возврат 1;", "the Russian old body is removed from disk")
     module = _read_module_text()
     assert_contains(module, "Возврат 2;", "Russian replacement reached the module")
     assert_not_contains(module, "Возврат 1;", "Russian old body is gone")
@@ -508,7 +634,9 @@ def test_replace_method_stale_hash_rejected_and_exact_readback_unchanged():
         "expectedHash": stale_token,
     })
     assert_ok(concurrent, "simulate a concurrent module edit")
+    assert_contains(read_disk("src/" + MODULE), "Value = 2;", "the concurrent edit is already on disk")
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
         "methodName": "Target", "expectedHash": stale_token,
@@ -517,7 +645,7 @@ def test_replace_method_stale_hash_rejected_and_exact_readback_unchanged():
     error = assert_error(rejected, "replaceMethod with a stale expectedHash")
     assert_error_quality(error, names=["expectedHash"], suggests=["read_module_source"],
                          ctx="stale targeted hash steers to a fresh read")
-    _assert_readback_unchanged(before, "stale expectedHash refusal")
+    _assert_readback_unchanged(before, before_disk, "stale expectedHash refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
@@ -528,6 +656,7 @@ def test_ambiguous_method_target_rejected_and_readback_unchanged():
     )
     token = _seed_targeted(ambiguous)
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
         "methodName": "Target", "expectedHash": token,
@@ -536,13 +665,14 @@ def test_ambiguous_method_target_rejected_and_readback_unchanged():
     error = assert_error(rejected, "ambiguous method target")
     assert_error_quality(error, names=["Target"], suggests=["ambiguous", "preprocessor"],
                          ctx="duplicate preprocessor declarations are never selected silently")
-    _assert_readback_unchanged(before, "ambiguous target refusal")
+    _assert_readback_unchanged(before, before_disk, "ambiguous target refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
 def test_method_source_with_zero_methods_rejected_and_unchanged():
     token = _seed_targeted()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
         "methodName": "Target", "expectedHash": token, "source": "Value = 10;\n",
@@ -550,13 +680,14 @@ def test_method_source_with_zero_methods_rejected_and_unchanged():
     error = assert_error(rejected, "targeted source with zero methods")
     assert_error_quality(error, names=["source"], suggests=["exactly one"],
                          ctx="zero-method source is refused")
-    _assert_readback_unchanged(before, "zero-method source refusal")
+    _assert_readback_unchanged(before, before_disk, "zero-method source refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
 def test_method_source_with_two_methods_rejected_and_unchanged():
     token = _seed_targeted()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     two = "Procedure Target()\nEndProcedure\nProcedure Extra()\nEndProcedure\n"
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
@@ -565,13 +696,14 @@ def test_method_source_with_two_methods_rejected_and_unchanged():
     error = assert_error(rejected, "targeted source with two methods")
     assert_error_quality(error, names=["source"], suggests=["exactly one"],
                          ctx="two-method source is refused")
-    _assert_readback_unchanged(before, "two-method source refusal")
+    _assert_readback_unchanged(before, before_disk, "two-method source refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
 def test_replace_method_name_mismatch_rejected_and_unchanged():
     token = _seed_targeted()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
         "methodName": "Target", "expectedHash": token,
@@ -580,13 +712,14 @@ def test_replace_method_name_mismatch_rejected_and_unchanged():
     error = assert_error(rejected, "replaceMethod name mismatch")
     assert_error_quality(error, names=["Target", "Renamed"], suggests=["Rename is not supported"],
                          ctx="replaceMethod cannot rename")
-    _assert_readback_unchanged(before, "method name mismatch refusal")
+    _assert_readback_unchanged(before, before_disk, "method name mismatch refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
 def test_insert_existing_method_name_rejected_and_unchanged():
     token = _seed_targeted()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "insertBefore",
         "methodName": "Target", "expectedHash": token,
@@ -595,7 +728,7 @@ def test_insert_existing_method_name_rejected_and_unchanged():
     error = assert_error(rejected, "insert of existing method name")
     assert_error_quality(error, names=["Last"], suggests=["already exists", "unique"],
                          ctx="insert refuses a colliding method name")
-    _assert_readback_unchanged(before, "existing-name insert refusal")
+    _assert_readback_unchanged(before, before_disk, "existing-name insert refusal")
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")
@@ -607,8 +740,14 @@ def test_repeated_insert_rejected_without_duplicate():
         "methodName": "Target", "expectedHash": token, "source": source,
     })
     assert_ok(first, "first insertAfter")
+    disk = read_disk("src/" + MODULE)
+    assert_contains(disk, source, "the first insertion is on disk before its hash is read")
+    assert_diff_contains("Procedure InsertOnce() Export", "the first insertion is persisted")
+    if disk.count("Procedure InsertOnce() Export") != 1:
+        raise E2EAssertion("the first insertion must create exactly one method on disk:\n%s" % disk[:800])
     fresh_token = _read_content_hash()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     repeated = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "insertAfter",
         "methodName": "Target", "expectedHash": fresh_token, "source": source,
@@ -616,7 +755,7 @@ def test_repeated_insert_rejected_without_duplicate():
     error = assert_error(repeated, "repeated insertAfter")
     assert_error_quality(error, names=["InsertOnce"], suggests=["already exists"],
                          ctx="repeating an insert is idempotently refused")
-    _assert_readback_unchanged(before, "repeated insert refusal")
+    _assert_readback_unchanged(before, before_disk, "repeated insert refusal")
     if before.count("Procedure InsertOnce() Export") != 1:
         raise E2EAssertion("repeated insert produced a duplicate:\n%s" % before[:800])
 
@@ -625,6 +764,7 @@ def test_repeated_insert_rejected_without_duplicate():
 def test_endprocedure_prefix_without_real_terminator_is_rejected():
     token = _seed_targeted()
     before = _read_module_text()
+    before_disk = _read_fixture_bytes(PROJECT_REL, "src/" + MODULE)
     rejected = call("write_module_source", {
         "projectName": PROJECT, "modulePath": MODULE, "mode": "replaceMethod",
         "methodName": "Target", "expectedHash": token,
@@ -633,7 +773,7 @@ def test_endprocedure_prefix_without_real_terminator_is_rejected():
     error = assert_error(rejected, "EndProcedureResult is not a terminator")
     assert_error_quality(error, names=["source"], suggests=["complete", "terminator"],
                          ctx="terminator-prefix identifier cannot complete a method")
-    _assert_readback_unchanged(before, "false terminator refusal")
+    _assert_readback_unchanged(before, before_disk, "false terminator refusal")
 
 
 # Built-in BSL syntax check (#397 / #109) — the gate must let the legal single-line
@@ -1090,8 +1230,7 @@ def _remove_root_extension_block(mdo_rel):
 
 def _read_extension_bytes(rel):
     """The raw bytes of a file in the extension fixture - for a check that the file was left byte for byte."""
-    with open(os.path.join(REPO_ROOT, *TESTS_PROJECT_REL.split("/"), *rel.split("/")), "rb") as f:
-        return f.read()
+    return _read_fixture_bytes(TESTS_PROJECT_REL, rel)
 
 
 @e2e_test(tool="write_module_source", kind="write-metadata")

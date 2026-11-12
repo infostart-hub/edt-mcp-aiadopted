@@ -259,6 +259,26 @@ public final class ComparisonTreeReport
          *     copy and the renderer cannot be bounded differently
          * @return the copy; {@link #isPresent()} answers {@code false} for a {@code null} scope
          */
+        @SuppressWarnings("unchecked")
+        private static Map<String, List<String>> extendedScope(ComparisonScope scope, ComparisonSide side)
+        {
+            try
+            {
+                Object value = ComparisonScope.class.getMethod("getExtendedScope", ComparisonSide.class)
+                    .invoke(scope, side);
+                if (value == null) return Collections.emptyMap();
+                if (value instanceof Map<?, ?>) return (Map<String, List<String>>)value;
+                // 2025 supplies names only; do not invent dependency reasons.
+                Map<String, List<String>> names = new java.util.LinkedHashMap<>();
+                for (String name : (List<String>)value) names.put(name, Collections.emptyList());
+                return names;
+            }
+            catch (ReflectiveOperationException failure)
+            {
+                throw new IllegalStateException("Cannot read EDT comparison scope", failure);
+            }
+        }
+
         public static ScopeSnapshot copyOf(ComparisonScope scope, int limit)
         {
             if (scope == null)
@@ -272,7 +292,7 @@ public final class ComparisonTreeReport
                 // itself, and presenting that as the caller's request is the lie this report
                 // exists to avoid.
                 copy.put(side,
-                    Side.of(scope.getInputScope(side), scope.getExtendedScope(side), limit));
+                    Side.of(scope.getInputScope(side), extendedScope(scope, side), limit));
             }
             return new ScopeSnapshot(copy);
         }

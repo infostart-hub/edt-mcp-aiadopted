@@ -11,6 +11,8 @@ nul
 /source/*
 !/source/compile.sh
 !/source/verify-oldest-platform.sh
+!/source/verify-console.py
+!/source/CoverageSummary.java
 log.log
 .serena/
 # Ignore personal/local .claude state, but SHARE project skills, hooks and settings

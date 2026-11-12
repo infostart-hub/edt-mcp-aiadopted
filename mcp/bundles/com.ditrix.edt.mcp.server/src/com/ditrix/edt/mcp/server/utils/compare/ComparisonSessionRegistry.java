@@ -329,6 +329,8 @@ public final class ComparisonSessionRegistry
          * comparison is gone" — see the class javadoc.
          */
         private boolean seenAliveByEdt;
+        /** First actual native status, independent of handle registration. */
+        private volatile boolean statusObserved;
 
         ComparisonSession(String comparisonId, String projectName, ComparisonProcessHandle handle,
             CompareMergeProcessBatch batch, long nowMillis)
@@ -399,20 +401,26 @@ public final class ComparisonSessionRegistry
         }
 
         /**
-         * Whether EDT has EVER listed this handle.
-         * <p>
-         * Exposed because it is the only authority on "the scheduled launch has not surfaced yet",
-         * and a poll loop has to tell that apart from "EDT will not answer for this comparison".
-         * {@code startComparison} SCHEDULES the launch, so between it and the first listing EDT
-         * answers no status at all - readings that look exactly like an unreadable comparison. A
-         * loop that spends its unreadable-tick budget on them cancels a correctly queued
-         * comparison whenever Eclipse's scheduler is busy for a few seconds.
+         * Whether EDT has ever listed this handle. Listing proves registration, not that
+         * the scheduled comparison job has begun or published its first status.
          *
          * @return {@code true} once EDT has listed the handle at least once
          */
         public boolean seenAliveByEdt()
         {
             return seenAliveByEdt;
+        }
+
+        /** Records a non-null status read from the native comparison process. */
+        public void noteStatusObserved()
+        {
+            statusObserved = true;
+        }
+
+        /** @return whether EDT has ever answered an actual status for this session */
+        public boolean hasObservedStatus()
+        {
+            return statusObserved;
         }
     }
 

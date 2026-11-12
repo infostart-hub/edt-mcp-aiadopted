@@ -2157,6 +2157,87 @@ public class CompareConfigurationsToolTest
         }
     }
 
+    /**
+     * Native EDT registers the handle before scheduling its process job. A listed handle
+     * therefore has no status until that job actually begins; it must not spend the six-tick
+     * unreadable budget and cancel a correctly queued comparison.
+     */
+    @Test
+    public void testAListedComparisonWithNoFirstStatusIsStillStarting() throws Exception
+    {
+        IComparisonManager manager = mock(IComparisonManager.class);
+        AtomicReference<ComparisonProcessStatus> nativeStatus = new AtomicReference<>();
+        when(manager.getStatus(any())).thenAnswer(invocation -> nativeStatus.get());
+        ComparisonEngine.install(() -> manager);
+        try
+        {
+            String id = registerListedComparison();
+            CompareConfigurationsTool.EngineBackend nativeBackend =
+                new CompareConfigurationsTool.EngineBackend();
+            for (int tick = 0; tick < CompareConfigurationsTool.MAX_UNREADABLE_TICKS + 2; tick++)
+            {
+                Progress reading = nativeBackend.poll(id);
+                assertTrue("a registered handle can still be queued, tick " + tick, //$NON-NLS-1$
+                    reading.isStarting());
+                assertFalse("registration is not evidence of a first native status", //$NON-NLS-1$
+                    reading.isUnknown());
+            }
+            nativeStatus.set(ComparisonProcessStatus.COMPARISON_PROCESS_INITIALIZATION_STARTED);
+            Progress begun = nativeBackend.poll(id);
+            assertFalse("the first native status ends the startup window", begun.isStarting()); //$NON-NLS-1$
+            assertFalse("a readable initialization is not an unknown status", begun.isUnknown()); //$NON-NLS-1$
+            nativeStatus.set(ComparisonProcessStatus.COMPARISON_PROCESS_FINISHED);
+            assertTrue("a queued comparison can then finish normally", nativeBackend.poll(id).isFinished()); //$NON-NLS-1$
+        }
+        finally
+        {
+            ComparisonEngine.uninstall();
+        }
+    }
+
+    /** Once a real status was observed, losing it remains an unreadable tick. */
+    @Test
+    public void testANullStatusAfterNativeInitializationIsNotASecondStartup() throws Exception
+    {
+        IComparisonManager manager = mock(IComparisonManager.class);
+        AtomicReference<ComparisonProcessStatus> nativeStatus = new AtomicReference<>(
+            ComparisonProcessStatus.COMPARISON_PROCESS_INITIALIZATION_STARTED);
+        when(manager.getStatus(any())).thenAnswer(invocation -> nativeStatus.get());
+        ComparisonEngine.install(() -> manager);
+        try
+        {
+            String id = registerListedComparison();
+            CompareConfigurationsTool.EngineBackend nativeBackend =
+                new CompareConfigurationsTool.EngineBackend();
+            assertFalse(nativeBackend.poll(id).isUnknown());
+            nativeStatus.set(null);
+            Progress lost = nativeBackend.poll(id);
+            assertTrue("losing a status already observed spends the unreadable budget", lost.isUnknown()); //$NON-NLS-1$
+            assertFalse("a comparison cannot go back to waiting for its first status", lost.isStarting()); //$NON-NLS-1$
+        }
+        finally
+        {
+            ComparisonEngine.uninstall();
+        }
+    }
+
+    /**
+     * Arrange the native handle-registration fact without an Eclipse workspace. Only the
+     * registry's existing liveness latch is seeded; every status read and phase decision below
+     * still uses the installed production engine and EngineBackend.poll.
+     */
+    private static String registerListedComparison() throws Exception
+    {
+        ComparisonSessionRegistry registry = ComparisonSessionRegistry.shared();
+        String id = registry.register(comparisonHandle(), new CompareMergeProcessBatch(List.of()));
+        ComparisonSessionRegistry.ComparisonSession session = registry.find(id).orElseThrow();
+        java.lang.reflect.Field listed = session.getClass().getDeclaredField("seenAliveByEdt"); //$NON-NLS-1$
+        listed.setAccessible(true);
+        listed.setBoolean(session, true);
+        assertTrue("fixture represents a handle EDT already registered", session.seenAliveByEdt()); //$NON-NLS-1$
+        return id;
+    }
+
     // ==== the TERMINAL read rides out that same gap, on that same budget ====
     //
     // The half of the finding left behind when the poll was fixed. The report path asked

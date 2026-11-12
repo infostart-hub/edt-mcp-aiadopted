@@ -42,6 +42,7 @@ import com.ditrix.edt.mcp.server.utils.CliReflectionErrors;
 import com.ditrix.edt.mcp.server.utils.FrontMatter;
 import com.ditrix.edt.mcp.server.utils.McpJobs;
 import com.ditrix.edt.mcp.server.utils.PlatformFailures;
+import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
 import com.ditrix.edt.mcp.server.utils.ProjectImportValidation;
 import com.ditrix.edt.mcp.server.utils.WorkspacePaths;
 
@@ -127,7 +128,7 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
      */
     static final long PROJECT_START_BUDGET_MS = TimeUnit.SECONDS.toMillis(300);
 
-    /** How often readiness ({@code isStarted} and the DtProject) is polled during the wait. */
+    /** How often readiness (context, DtProject and model) is polled during the wait. */
     private static final long START_POLL_PERIOD_MS = 250L;
 
     /**
@@ -660,9 +661,8 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
         body.append("- Import path: ").append(importPath).append('\n'); //$NON-NLS-1$
         if (ready)
         {
-            body.append("- Project state: EDT has started this project. `list_projects` may " //$NON-NLS-1$
-                + "still report it `building` for a short while, until EDT finishes computing " //$NON-NLS-1$
-                + "its derived data.\n"); //$NON-NLS-1$
+            body.append("- Project state: EDT has started this project and finished computing " //$NON-NLS-1$
+                + "its model and derived data. The project reports `ready` in `list_projects`.\n"); //$NON-NLS-1$
         }
         else if (outcome.phase == StartPhase.REFRESHING)
         {
@@ -684,9 +684,9 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
         else
         {
             // START_ISSUED: the request returned (or the project was already started) and the
-            // wait for isStarted ran out.
+            // wait for the context and model readiness ran out.
             body.append("- Project state: the start request was issued and EDT is still starting ") //$NON-NLS-1$
-                .append("this project - it had not finished after ").append(budgetSeconds) //$NON-NLS-1$
+                .append("this project or building its model - it had not finished after ").append(budgetSeconds) //$NON-NLS-1$
                 .append(" seconds. The import itself is done and the files are on disk. Poll ") //$NON-NLS-1$
                 .append("`list_projects` until this project reports `ready` before calling model ") //$NON-NLS-1$
                 .append("tools on it, and do not repeat the import.\n"); //$NON-NLS-1$
@@ -856,7 +856,8 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
         }
         // Asked again on the calling thread: whether the project is usable is a fact about EDT
         // now, not about how this wait ended.
-        if (lifecycle.isStarted(project) && lifecycle.hasDtProject(project))
+        if (lifecycle.isStarted(project) && lifecycle.hasDtProject(project)
+                && lifecycle.isModelReady(project))
         {
             return new StartOutcome(StartPhase.STARTED, null);
         }
@@ -906,11 +907,12 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
             phase.set(StartPhase.START_REQUESTED);
             issueStart(project, lifecycle, platformMonitor);
             phase.set(StartPhase.START_ISSUED);
-            // Until the project is READY, not merely started: STARTED needs the DtProject too,
+            // Until the project is READY: STARTED needs a DtProject and a ready model too,
             // and a loop that stopped at isStarted would answer 'importing' milliseconds later
             // while claiming the whole budget ran out.
             while (!monitor.isCanceled() && System.nanoTime() - pollDeadline < 0
-                && !(lifecycle.isStarted(project) && lifecycle.hasDtProject(project)))
+                && !(lifecycle.isStarted(project) && lifecycle.hasDtProject(project)
+                    && lifecycle.isModelReady(project)))
             {
                 Thread.sleep(START_POLL_PERIOD_MS);
             }
@@ -1216,6 +1218,12 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
             {
                 return dtProjectManager.getDtProject(project) != null;
             }
+
+            @Override
+            public boolean isModelReady(IProject project)
+            {
+                return ProjectStateChecker.checkProjectState(project).isReady();
+            }
         };
     }
 
@@ -1242,7 +1250,7 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
          */
         START_ISSUED,
 
-        /** EDT reports the project started AND {@code IDtProjectManager} knows a DtProject. */
+        /** EDT reports a started context, a registered DtProject and a ready model. */
         STARTED,
 
         /**
@@ -1435,6 +1443,14 @@ public class ImportConfigurationFromXmlTool implements IMcpTool
          * @return {@code true} when a DtProject exists
          */
         boolean hasDtProject(IProject project);
+
+        /**
+         * Whether the model and derived data are ready, using the same state as list_projects.
+         *
+         * @param project the imported project
+         * @return {@code true} only when the project reports ready
+         */
+        boolean isModelReady(IProject project);
     }
 
     /** The production import: {@code IImportConfigurationFilesApi.importProject} by reflection. */

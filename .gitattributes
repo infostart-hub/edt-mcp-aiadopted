@@ -11,3 +11,7 @@ tests/e2e/tools_list.golden.json text eol=lf
 
 # 1C binary fixtures for import_project_from_file - never touch their bytes.
 tests/ImportFiles/** binary
+
+# Business skills are validated and distributed byte-for-byte on every host.
+agent/**/*.md text eol=lf
+agent/*.md text eol=lf

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MCP Server for EDT
  * Copyright (C) 2025 DitriX (https://github.com/DitriXNew)
  * Licensed under AGPL-3.0-or-later
@@ -27,7 +27,7 @@ import com.ditrix.edt.mcp.server.tags.TagUtils;
 
 /**
  * Content provider that integrates virtual groups into the EDT Navigator.
- * 
+ *
  * <p>This provider:
  * <ul>
  *   <li>Adds group folders as children of collection folders (CommonModules, etc.)</li>
@@ -37,19 +37,19 @@ import com.ditrix.edt.mcp.server.tags.TagUtils;
  * </p>
  */
 public class GroupContentProvider implements ICommonContentProvider, IGroupChangeListener {
-    
+
     private static final Object[] NO_CHILDREN = new Object[0];
-    
+
     private StructuredViewer viewer;
     private GroupSelectionHelper selectionHelper;
     private volatile boolean listenerRegistered = false;
     /** Set from {@link #servesNavigatorView(Viewer)}; false until the viewer is known. */
     private volatile boolean servesNavigatorView = false;
-    
+
     public GroupContentProvider() {
         Activator.logDebug("GroupContentProvider: constructor called");
     }
-    
+
     /**
      * Gets the group service with lazy listener registration.
      * Returns null if service is not available.
@@ -66,19 +66,19 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
         }
         return service;
     }
-    
+
     @Override
     public void init(ICommonContentExtensionSite aConfig) {
         Activator.logDebug("GroupContentProvider.init called");
         // Lazy registration - service may not be available yet
         getGroupService();
     }
-    
+
     @Override
     public Object[] getElements(Object inputElement) {
         return getChildren(inputElement);
     }
-    
+
     @Override
     public Object[] getChildren(Object parentElement) {
         if (!servesNavigatorView) {
@@ -93,22 +93,22 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
         if (isCollectionAdapter(parentElement)) {
             return getChildrenForCollection(parentElement);
         }
-        
+
         // Handle our group adapters
         if (parentElement instanceof GroupNavigatorAdapter groupAdapter) {
             return groupAdapter.getChildren(parentElement);
         }
-        
+
         return NO_CHILDREN;
     }
-    
+
     /**
      * Checks if the element is a collection adapter (using utility class).
      */
     private boolean isCollectionAdapter(Object element) {
         return CollectionAdapterUtils.isCollectionAdapter(element);
     }
-    
+
     /**
      * Gets children for a collection folder, adding groups and filtering grouped objects.
      */
@@ -118,35 +118,35 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
         if (project == null) {
             return NO_CHILDREN;
         }
-        
+
         // Get the path for this collection (e.g., "CommonModules")
-        String collectionPath = CollectionAdapterUtils.getFullCollectionPath(collectionAdapter, 
+        String collectionPath = CollectionAdapterUtils.getFullCollectionPath(collectionAdapter,
             TagUtils::extractFqn);
         if (collectionPath == null) {
             return NO_CHILDREN;
         }
-        
+
         IGroupService groupService = getGroupService();
         if (groupService == null) {
             return NO_CHILDREN;
         }
-        
+
         // Check if there are any groups at this path
         if (!groupService.hasGroupsAtPath(project, collectionPath)) {
             return NO_CHILDREN;
         }
-        
+
         List<Object> children = new ArrayList<>();
-        
+
         // Add group folders
         List<Group> groups = groupService.getGroupsAtPath(project, collectionPath);
         for (Group group : groups) {
             children.add(new GroupNavigatorAdapter(group, project, collectionAdapter));
         }
-        
+
         return children.toArray();
     }
-    
+
     @Override
     public Object getParent(Object element) {
         if (element instanceof GroupNavigatorAdapter groupAdapter) {
@@ -154,7 +154,7 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
         }
         return null;
     }
-    
+
     @Override
     public boolean hasChildren(Object element) {
         if (!servesNavigatorView) {
@@ -173,13 +173,13 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
             if (service == null) {
                 return !group.getChildren().isEmpty();
             }
-            
+
             boolean hasNestedGroups = service.hasGroupsAtPath(project, group.getFullPath());
             boolean hasObjects = !group.getChildren().isEmpty();
-            
+
             return hasNestedGroups || hasObjects;
         }
-        
+
         if (isCollectionAdapter(element)) {
             // Check if this collection has any groups
             IProject project = CollectionAdapterUtils.getProjectFromAdapter(element);
@@ -189,15 +189,15 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
                 return svc != null && svc.hasGroupsAtPath(project, path);
             }
         }
-        
+
         return false;
     }
-    
+
     @Override
     public void inputChanged(Viewer viewer, Object oldInput, Object newInput) {
-        Activator.logDebug("GroupContentProvider.inputChanged called, viewer type: " 
+        Activator.logDebug("GroupContentProvider.inputChanged called, viewer type: "
             + (viewer != null ? viewer.getClass().getName() : "null"));
-        
+
         servesNavigatorView = servesNavigatorView(viewer);
         if (!servesNavigatorView) {
             this.viewer = null;
@@ -208,7 +208,7 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
             this.viewer = sv;
             // Note: Filter is added via commonFilter in plugin.xml with activeByDefault="true"
             // No need to add programmatically - this avoids duplicate filter issues
-            
+
             // Attach selection helper for grouped object selection restoration
             if (viewer instanceof TreeViewer tv && selectionHelper == null) {
                 selectionHelper = new GroupSelectionHelper(tv);
@@ -217,7 +217,7 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
             }
         }
     }
-    
+
     /**
      * Answers whether {@code viewer} is the Navigator view itself.
      *
@@ -229,7 +229,7 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
     static boolean servesNavigatorView(Viewer viewer) {
         return viewer != null && isNavigatorViewer(viewer.getClass());
     }
-    
+
     /**
      * The viewer-class half of {@link #servesNavigatorView(Viewer)}. Split out so a test can ask
      * the question of a class: mocking a JFace viewer costs minutes of build time.
@@ -237,7 +237,7 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
     static boolean isNavigatorViewer(Class<?> viewerType) {
         return CommonViewer.class.isAssignableFrom(viewerType);
     }
-    
+
     @Override
     public void dispose() {
         if (selectionHelper != null) {
@@ -253,13 +253,13 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
         }
         viewer = null;
     }
-    
+
     @Override
     public void onGroupsChanged(IProject project) {
         if (viewer == null || viewer.getControl() == null || viewer.getControl().isDisposed()) {
             return;
         }
-        
+
         Display display = viewer.getControl().getDisplay();
         if (display != null && !display.isDisposed()) {
             display.asyncExec(() -> {
@@ -269,12 +269,12 @@ public class GroupContentProvider implements ICommonContentProvider, IGroupChang
             });
         }
     }
-    
+
     @Override
     public void restoreState(IMemento aMemento) {
         // No state to restore
     }
-    
+
     @Override
     public void saveState(IMemento aMemento) {
         // No state to save

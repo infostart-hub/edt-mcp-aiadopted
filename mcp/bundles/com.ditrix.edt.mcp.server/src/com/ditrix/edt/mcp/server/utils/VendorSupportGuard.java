@@ -388,7 +388,8 @@ public final class VendorSupportGuard
         {
             return false;
         }
-        DistributionSupport settings = configuration.getDistributionSettings();
+        DistributionSupport settings = (DistributionSupport)configuration.eGet(
+            configuration.eClass().getEStructuralFeature("distributionSettings"));
         return settings != null && !settings.eIsProxy() && !settings.getParentConfigurationInfos().isEmpty();
     }
 

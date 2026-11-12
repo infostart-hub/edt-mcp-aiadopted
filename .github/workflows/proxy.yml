@@ -2,12 +2,12 @@ name: Proxy
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'proxy/**'
       - '.github/workflows/proxy.yml'
   pull_request:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'proxy/**'
       - '.github/workflows/proxy.yml'

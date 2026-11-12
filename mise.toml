@@ -1,0 +1,32 @@
+[tools]
+uv = "0.13.6"
+java = "liberica-25.0.0+37"
+maven = "3.9.16"
+
+[tasks.setup]
+description = "Установить закреплённые Java и Maven"
+run = "mise install"
+
+[tasks."env:check"]
+description = "Проверить фактические версии среды EDT MCP"
+depends = ["setup"]
+run = ["java -version", "mvn --version"]
+
+[tasks.test]
+description = "Запустить тесты EDT MCP на закреплённой среде"
+depends = ["setup"]
+run = "mvn -T4 -f mcp/pom.xml clean test"
+
+[tasks.build]
+description = "Собрать p2-репозиторий EDT MCP"
+depends = ["setup"]
+run = "mvn -T4 -f mcp/pom.xml clean package -DskipTests"
+
+[tasks.check]
+description = "Проверить EDT MCP без изменения работающей EDT"
+depends = ["lint:python", "setup"]
+run = "mvn -T4 -f mcp/pom.xml verify"
+
+[tasks."lint:python"]
+description = "Проверить Python и явные импорты"
+run = ["uvx --from ruff==0.16.7 ruff check --no-cache .", "uvx --from ruff==0.16.7 ruff format --no-cache --check ."]

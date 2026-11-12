@@ -59,7 +59,7 @@ If the job is not finished within `waitSeconds`, the call answers **Pending** wi
 
 A finished job answers with a table: the project, `State` (`ready`, or `starting` when EDT had not finished starting it within the wait), the project kind EDT gave it, the configuration name, the base project it is linked to, the external objects it holds, the source file (plus an `Outside workspace` row when it lies outside the EDT workspace) and the platform version used. Kind, base and objects are read back from EDT, not repeated from the request; while the project is still starting they are not readable yet and the table says so.
 
-`ready` is about the project context; `list_projects` can still report `building` for a short while. Poll it until `ready` before calling model tools.
+`ready` requires a started context, a registered DtProject and a ready model, using the same check as `list_projects`. Pending derived data remains `starting`; poll `list_projects` until `ready` before calling model tools.
 
 ## Failures
 

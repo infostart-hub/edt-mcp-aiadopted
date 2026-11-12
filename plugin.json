@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "edt-mcp",
+  "version": "1.0.0",
+  "description": "Connects AI coding agents to a running 1C:EDT instance through the EDT MCP Server.",
+  "author": {
+    "name": "DitriXNew",
+    "url": "https://github.com/DitriXNew"
+  },
+  "homepage": "https://github.com/DitriXNew/EDT-MCP",
+  "repository": "https://github.com/infostart-hub/edt-mcp-aiadopted",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "1c",
+    "edt",
+    "mcp",
+    "agent-plugin"
+  ]
+}

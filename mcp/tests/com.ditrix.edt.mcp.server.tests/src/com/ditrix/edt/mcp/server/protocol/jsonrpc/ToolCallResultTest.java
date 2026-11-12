@@ -21,6 +21,28 @@ import com.google.gson.JsonParser;
 public class ToolCallResultTest
 {
     @Test
+    public void testInvalidQueryIsVisibleToContentOnlyAnalyst()
+    {
+        JsonElement data = JsonParser.parseString("{\"success\":true,\"valid\":false,\"validationState\":\"INVALID\",\"errorCount\":1,\"sources\":[],\"issues\":[{\"severity\":\"ERROR\",\"message\":\"Missing END in CASE expression\"}]}");
+        ToolCallResult result = ToolCallResult.json(data);
+        String text = result.getContent().get(0).getText();
+        assertTrue(text.contains("valid=false"));
+        assertTrue(text.contains("errorCount=1"));
+        assertTrue(text.contains("Missing END in CASE expression"));
+        assertFalse(text.startsWith("OK"));
+        assertSame(data, result.getStructuredContent());
+    }
+
+    @Test
+    public void testValidQueryDoesNotHideItsVerdict()
+    {
+        JsonElement data = JsonParser.parseString("{\"success\":true,\"valid\":true,\"errorCount\":0,\"validationComplete\":true}");
+        String text = ToolCallResult.json(data).getContent().get(0).getText();
+        assertTrue(text.contains("valid=true"));
+        assertTrue(text.contains("errorCount=0"));
+    }
+
+    @Test
     public void testTextResult()
     {
         ToolCallResult result = ToolCallResult.text("Hello, world!");

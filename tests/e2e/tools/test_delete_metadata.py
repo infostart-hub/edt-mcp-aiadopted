@@ -145,12 +145,17 @@ def test_confirm_deletes_member_attribute():
     poll_disk_contains(_CATALOG_MDO, "<name>%s</name>" % attr,
                        ctx="baseline: the seeded attribute must be in the owner .mdo before it is deleted")
 
+    russian_fqn = "Справочник.Catalog.Реквизит." + attr
+    preview = call("delete_metadata", {"projectName": PROJECT, "fqn": russian_fqn})
+    assert_ok(preview, "preview the member through Russian structural tokens")
+    assert preview.structured.get("fqn") == "Catalog.Catalog.Attribute." + attr, preview.structured
     r = call("delete_metadata", {
         "projectName": PROJECT,
-        "fqn": "Catalog.Catalog.Attribute." + attr,
+        "fqn": russian_fqn,
         "confirm": True,
     })
     assert_ok(r, "delete the seeded attribute")
+    assert r.structured.get("fqn") == "Catalog.Catalog.Attribute." + attr, r.structured
     assert r.structured.get("action") == "executed", "member delete must execute: %r" % (r.structured,)
     # #408: a confirmed delete states the project it wrote in, so the barrier waits for the export
     # of THAT project rather than for whatever the arguments named. The cascade participants are
@@ -328,6 +333,126 @@ def test_preview_accepts_explicit_timeout_and_clamps_out_of_range_value():
 _FORM = "src/Catalogs/Catalog/Forms/ItemForm/Form.form"
 
 
+def _batch_operations(*members):
+    return [{"action": "delete", "fqn": "Catalog.Catalog.Form.ItemForm." + member}
+            for member in members]
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_batch_preflight_reports_two_typos_with_zero_writes():
+    settle_or_fail("batch preflight")
+    r = call("delete_metadata", {
+        "projectName": PROJECT,
+        "operations": _batch_operations("Command.BatchTypoOne", "Command.BatchTypoTwo"),
+        "confirm": True, "atomic": True,
+    })
+    assert_error(r, "two independent missing batch targets")
+    data = r.structured
+    assert data["reason"] == "invalidBatch", data
+    assert [entry["operationIndex"] for entry in data["errors"]] == [0, 1], data
+    for entry, name in zip(data["errors"], ["BatchTypoOne", "BatchTypoTwo"]):
+        assert entry["reason"] == "invalidNow", entry
+        assert_error_quality(entry["error"], names=[name], suggests=["get_metadata_details"])
+    assert data["applied"] == [] and data["committed"] is False, data
+    assert data["persistenceState"] == "unchanged", data
+    assert "mutationCommitted" not in data and "mutationOutcomeUnknown" not in data, data
+    assert_no_diff()
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_batch_unknown_fields_refused_before_mutation():
+    operations = _batch_operations("Group.FormCommandBar", "Command.Anything")
+    operations[1]["unknownOperationField"] = True
+    r = call("delete_metadata", {
+        "projectName": PROJECT, "operations": operations,
+        "unknownTopLevelField": True, "confirm": True,
+    })
+    assert_error(r, "unknown batch parameters")
+    data = r.structured
+    assert len(data["errors"]) == 2, data
+    errors = " ".join(entry["error"] for entry in data["errors"])
+    assert_error_quality(errors, names=["unknownTopLevelField", "unknownOperationField"],
+                         suggests=["Use only action and fqn"])
+    assert data["applied"] == [] and data["committed"] is False, data
+    assert_no_diff()
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_batch_rejects_unsupported_modes_and_create_modify_chain():
+    operations = _batch_operations("Command.A", "Command.A")
+    operations[0]["action"] = "create"
+    operations[1]["action"] = "modify"
+    r = call("delete_metadata", {"projectName": PROJECT, "operations": operations, "confirm": True})
+    assert_error(r, "unsupported dependency chain")
+    assert len(r.structured["errors"]) == 2, r.structured
+    assert r.structured["applied"] == [], r.structured
+    for entry in r.structured["errors"]:
+        assert entry["reason"] == "unsupportedBatch", entry
+        assert_error_quality(entry["error"], names=["action"], suggests=["create_metadata", "modify_metadata"])
+    for extra in ({"atomic": False}, {"force": True}, {"timeout": 600}, {"continueOnError": True},
+                  {"fqn": "Catalog.Catalog"}):
+        r = call("delete_metadata", {"projectName": PROJECT, "operations": _batch_operations("Command.A"),
+                                     "confirm": True, **extra})
+        assert_error(r, "unsupported batch mode %r" % extra)
+        assert r.structured["applied"] == [] and r.structured["committed"] is False, r.structured
+        assert r.structured["errors"], r.structured
+        errors = " ".join(entry["error"] for entry in r.structured["errors"])
+        assert_error_quality(errors, names=list(extra),
+                             suggests=["Omit" if "atomic" in extra or "force" in extra else "Pass operations"])
+    assert_no_diff()
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_batch_preview_then_confirm_deletes_group_and_commands_once():
+    members = ["Group.BatchGroup", "Command.BatchFirst", "Command.BatchSecond", "Command.BatchKeep"]
+    for member in members:
+        assert_ok(call("create_metadata", {
+            "projectName": PROJECT, "fqn": "Catalog.Catalog.Form.ItemForm." + member}), "seed " + member)
+        wait_for_project_ready()
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT, "fqn": "Catalog.Catalog.Form.ItemForm.Decoration.BatchChild",
+        "properties": [{"name": "parent", "value": "BatchGroup"}]}), "seed contained child")
+    settle_or_fail("batch delete")
+    for name in ["BatchGroup", "BatchFirst", "BatchSecond", "BatchKeep", "BatchChild"]:
+        assert_contains(read_disk(_FORM), "<name>%s</name>" % name, "positive disk control " + name)
+    before = tree_snapshot()
+    operations = _batch_operations(*members[:3])
+    preview = call("delete_metadata", {"projectName": PROJECT, "operations": operations, "atomic": True})
+    assert_ok(preview, "batch preview")
+    assert preview.structured["action"] == "preview", preview.structured
+    assert preview.structured["applied"] == [] and preview.structured["committed"] is False, preview.structured
+    assert preview.structured["items"][0]["descendants"][0]["name"] == "BatchChild", preview.structured
+    assert_no_marker_fields(preview.structured, "batch preview")
+    assert_tree_unchanged(before, "batch preview must not mutate the seeded tree")
+    readback = call("get_metadata_details", {"projectName": PROJECT,
+                                             "objectFqns": ["Catalog.Catalog.Form.ItemForm"]})
+    assert_ok(readback, "preview model unchanged")
+    for name in ["BatchGroup", "BatchFirst", "BatchSecond", "BatchChild"]:
+        assert_contains(readback.text, name, "preview keeps " + name)
+    result = call("delete_metadata", {"projectName": PROJECT, "operations": operations,
+                                      "atomic": True, "confirm": True})
+    assert_ok(result, "confirmed single-form batch")
+    # Disk FIRST: the batch itself submits and awaits this form export.
+    for name in ["BatchGroup", "BatchFirst", "BatchSecond", "BatchChild"]:
+        assert_disk_lacks(_FORM, "<name>%s</name>" % name, ctx="batch removes " + name)
+    assert_contains(read_disk(_FORM), "<name>BatchKeep</name>", "unselected command survives")
+    data = result.structured
+    assert data["action"] == "executed" and data["applied"] == [0, 1, 2], data
+    assert data["committed"] is True and data["rollbackPerformed"] is False, data
+    assert data["exportSubmitted"] is True, data
+    assert data["writtenProjects"] == [PROJECT], data
+    assert data["persistenceState"] == "exportDrainedBytesUnverified", data
+    assert isinstance(data["markersIncomplete"], bool), data
+    assert isinstance(data["markerCount"], int) and isinstance(data["markers"], list), data
+    assert "Do not repeat" in data["safeRetry"], data
+    readback = call("get_metadata_details", {"projectName": PROJECT,
+                                             "objectFqns": ["Catalog.Catalog.Form.ItemForm"]})
+    assert_ok(readback, "batch model read-back")
+    for name in ["BatchGroup", "BatchFirst", "BatchSecond", "BatchChild"]:
+        assert_not_contains(readback.text, name, "batch removed " + name)
+    assert_contains(readback.text, "BatchKeep", "unselected command survives in model")
+
+
 def _seed_form_attribute(attr):
     r = call("create_metadata", {
         "projectName": PROJECT, "fqn": "Catalog.Catalog.Form.ItemForm.Attribute." + attr})
@@ -363,10 +488,16 @@ def test_delete_form_field_preview_then_confirm():
 @e2e_test(tool="delete_metadata", kind="write-metadata")
 def test_delete_form_attribute_confirm():
     _seed_form_attribute("DAAttr")
+    canonical = "Catalog.Catalog.Form.ItemForm.Attribute.DAAttr"
+    preview = call("delete_metadata", {
+        "projectName": PROJECT, "fqn": "Справочник.Catalog.Форма.ItemForm.Реквизит.DAAttr"})
+    assert_ok(preview, "preview a form attribute through Russian tokens")
+    assert preview.structured.get("fqn") == canonical, preview.structured
     r = call("delete_metadata", {
-        "projectName": PROJECT, "fqn": "Catalog.Catalog.Form.ItemForm.Attribute.DAAttr",
-        "confirm": True})
+        "projectName": PROJECT, "fqn": preview.structured["fqn"],
+        "confirm": True, "expectedHash": preview.structured["contentHash"]})
     assert_ok(r, "delete a form attribute (confirm)")
+    assert r.structured.get("fqn") == canonical, r.structured
     assert r.structured.get("action") == "executed", "confirm must execute: %r" % (r.structured,)
     poll_disk_lacks(_FORM, "DAAttr", ctx="the deleted form attribute must be gone from the .form")
 
@@ -375,6 +506,45 @@ def test_delete_form_attribute_confirm():
 # items bound to the attribute with it, and keeps the form root's extInfo. Fixture: ItemForm's main
 # attribute 'Object' backs the fields Code / Description / Attribute (dataPath Object.*).
 _OBJECT_FIELDS = ("Code", "Description", "Attribute")
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_delete_form_attribute_stale_hash_refuses_without_writing():
+    form = "Catalog.Catalog.Form.ItemForm"
+    fqn = form + ".Attribute.Object"
+    pv = call("delete_metadata", {"projectName": PROJECT, "fqn": fqn})
+    assert_ok(pv, "preview main attribute deletion")
+    assert pv.structured.get("action") == "preview", repr(pv.structured)
+    old_hash = pv.structured.get("contentHash")
+    assert isinstance(old_hash, str) and old_hash, "preview must return contentHash: %r" % pv.structured
+    assert_no_diff()
+
+    created = call("create_metadata", {
+        "projectName": PROJECT, "fqn": form + ".Field.HashLateField",
+        "properties": [{"name": "dataPath", "value": "Object.Code"}]})
+    assert_ok(created, "grow the deletion scope after preview")
+    assert_contains(read_disk(_FORM), "<name>HashLateField</name>", "new field persisted before refusal")
+    wait_for_project_ready()
+    before = call("get_metadata_details", {"projectName": PROJECT, "objectFqns": [form]})
+    assert_ok(before, "read the changed form before confirm")
+    assert_contains(before.text, "HashLateField", "MODEL: scope grew after preview")
+    snapshot = tree_snapshot()
+
+    refused = call("delete_metadata", {
+        "projectName": PROJECT, "fqn": fqn, "confirm": True, "expectedHash": old_hash})
+    error = assert_error(refused, "stale form-attribute hash")
+    assert_error_quality(error, names=[fqn, "expectedHash"], suggests=["confirm=false", "contentHash"])
+    assert_contains(error, "The form changed since the preview", "actionable stale-preview refusal")
+    assert_tree_unchanged(snapshot, "refusal must preserve every fixture file, including the new field")
+    after = call("get_metadata_details", {"projectName": PROJECT, "objectFqns": [form]})
+    assert_ok(after, "read the form after refusal")
+    assert after.text == before.text, "refusal must preserve the complete form model"
+    fresh = call("delete_metadata", {"projectName": PROJECT, "fqn": fqn})
+    assert_ok(fresh, "preview again after refusal")
+    assert fresh.structured.get("contentHash") != old_hash, "expanded scope must have a different hash"
+    assert "HashLateField" in [it.get("name") for it in fresh.structured.get("items", [])], \
+        "new preview must disclose the field the old preview did not authorize"
+    assert_tree_unchanged(snapshot, "read-back and new preview must also leave the fixture unchanged")
 
 
 def _picked(structured):
@@ -456,8 +626,11 @@ def test_delete_non_main_form_attribute_takes_only_its_own_bound_field():
     assert_not_contains(pv.structured.get("message", ""), "MAIN attribute",
                         "a non-main attribute carries no main-attribute note")
 
-    r = call("delete_metadata", {"projectName": PROJECT, "fqn": fqn, "confirm": True})
-    assert_ok(r, "delete the non-main attribute (confirm)")
+    content_hash = pv.structured.get("contentHash")
+    assert isinstance(content_hash, str) and content_hash, "form-attribute preview must return contentHash"
+    r = call("delete_metadata", {
+        "projectName": PROJECT, "fqn": fqn, "confirm": True, "expectedHash": content_hash})
+    assert_ok(r, "delete the non-main attribute with its matching preview hash")
     assert r.structured.get("action") == "executed", "confirm must execute: %r" % (r.structured,)
     poll_disk_lacks(_FORM, "<name>DNField</name>", ctx="the field bound to DNAttr must be gone")
     xml = read_disk(_FORM)
@@ -465,6 +638,11 @@ def test_delete_non_main_form_attribute_takes_only_its_own_bound_field():
     for name in _OBJECT_FIELDS:
         assert_contains(xml, "<name>%s</name>" % name, "a field bound elsewhere (%s) must survive" % name)
     assert_contains(xml, "<name>Object</name>", "the main attribute must survive")
+    details = call("get_metadata_details", {
+        "projectName": PROJECT, "objectFqns": ["Catalog.Catalog.Form.ItemForm"]})
+    assert_ok(details, "model read-back after matching-hash delete")
+    assert_not_contains(details.text, "DNAttr", "MODEL: deleted attribute is gone")
+    assert_not_contains(details.text, "DNField", "MODEL: bound field is gone")
 
 
 @e2e_test(tool="delete_metadata", kind="write-metadata")
@@ -1412,3 +1590,43 @@ def test_top_level_subsystem_preview_and_confirm_cascade_to_all_descendants():
 @e2e_test(tool="delete_metadata", kind="write-metadata")
 def test_nested_subsystem_preview_and_force_confirm_cascade_to_all_descendants():
     _exercise_subsystem_parent_cascade(True)
+
+
+@e2e_test(tool="delete_metadata", kind="write-metadata")
+def test_delete_external_data_source_cube_members_825():
+    eds = "ExternalDataSource.E2E825Delete"
+    cube = eds + ".Cube.C"
+    table = cube + ".DimensionTable.DT"
+    field = table + ".Field.F"
+    dimension = cube + ".Dimension.D"
+    resource = cube + ".Resource.R"
+    base = "src/ExternalDataSources/E2E825Delete/Cubes/C/"
+    for fqn in [eds, cube, table, field, dimension, resource]:
+        assert wait_for_project_ready(), "indexing before create " + fqn
+        assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": fqn}), "seed " + fqn)
+    for fqn, path, needle in [
+        (field, base + "DimensionTables/DT/DT.mdo", "<name>F</name>"),
+        (dimension, base + "C.mdo", "<name>D</name>"),
+        (resource, base + "C.mdo", "<name>R</name>"),
+        (table, base + "C.mdo", "<dimensionTables>" + table + "</dimensionTables>"),
+    ]:
+        assert wait_for_project_ready(), "indexing before delete preview " + fqn
+        before = read_disk(path)
+        assert_contains(before, needle, "present before delete")
+        requested = fqn.replace(".DimensionTable.", ".ТаблицаИзмерения.").replace(".Field.", ".Поле.")
+        preview = call("delete_metadata", {"projectName": PROJECT, "fqn": requested})
+        assert_ok(preview, "preview " + fqn)
+        assert read_disk(path) == before, "preview must preserve the registering file"
+        present = call("get_metadata_details", {"projectName": PROJECT, "objectFqns": [fqn], "assignable": True})
+        assert_ok(present)
+        assert_not_contains(present.text, "## Errors", "preview preserves the node")
+        assert wait_for_project_ready(), "indexing before delete confirm " + fqn
+        deleted = call("delete_metadata", {"projectName": PROJECT, "fqn": requested, "confirm": True})
+        assert_ok(deleted, "delete " + fqn)
+        assert deleted.structured.get("persisted") is not False, deleted.structured
+        assert_not_contains(read_disk(path), needle, "immediate registering-file export")
+        gone = call("get_metadata_details", {"projectName": PROJECT, "objectFqns": [fqn], "assignable": True})
+        assert_ok(gone)
+        assert_contains(gone.text, "## Errors", "confirmed delete removes the addressed node")
+        assert_contains(gone.text, "not found", "the missing-node read must name its failure")
+    poll_disk_path_gone(base + "DimensionTables/DT")

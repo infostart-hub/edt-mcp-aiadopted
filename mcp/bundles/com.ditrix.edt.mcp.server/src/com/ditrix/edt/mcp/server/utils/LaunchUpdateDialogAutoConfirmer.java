@@ -15,8 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -241,6 +239,17 @@ public final class LaunchUpdateDialogAutoConfirmer
      */
     static final Set<String> CONFLICT_TITLES = Collections.unmodifiableSet(
         new LinkedHashSet<>(Arrays.asList(CONFLICT_TITLE, CONFLICT_TITLE_RU)));
+
+    private static final String ACTION_SELECTION_TITLE_RU =
+        "\u0412\u044B\u0431\u043E\u0440 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044F"; //$NON-NLS-1$
+    private static final Set<Set<String>> EXCLUSIVE_LOCK_BUTTON_SETS = Set.of(
+        Set.of("Cancel", "Retry", "Dynamic update"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        Set.of("\u041E\u0442\u043C\u0435\u043D\u0430", //$NON-NLS-1$
+            "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C", //$NON-NLS-1$
+            "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0434\u0438\u043D\u0430\u043C\u0438\u0447\u0435\u0441\u043A\u0438"), //$NON-NLS-1$
+        Set.of("\u0412\u0456\u0434\u043C\u0456\u043D\u0438\u0442\u0438", //$NON-NLS-1$
+            "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0438", //$NON-NLS-1$
+            "\u041E\u043D\u043E\u0432\u0438\u0442\u0438 \u0434\u0438\u043D\u0430\u043C\u0456\u0447\u043D\u043E")); //$NON-NLS-1$
 
     /**
      * Localized labels of the conflict modal's "Override" button
@@ -582,6 +591,16 @@ public final class LaunchUpdateDialogAutoConfirmer
     static boolean isTargetTitle(String shellTitle)
     {
         return shellTitle != null && APPLICATION_UPDATE_TITLES.contains(shellTitle);
+    }
+
+    /** This generic Designer question channel is identifiable only with its complete button set. */
+    static boolean isExclusiveLockQuestion(String shellTitle, Map<String, ? extends List<?>> buttons,
+        boolean complete)
+    {
+        return complete
+            && ("Action selection".equals(shellTitle) || ACTION_SELECTION_TITLE_RU.equals(shellTitle)) //$NON-NLS-1$
+            && buttons != null && EXCLUSIVE_LOCK_BUTTON_SETS.contains(buttons.keySet())
+            && buttons.values().stream().allMatch(matches -> matches != null && matches.size() == 1);
     }
 
     /**
@@ -1387,26 +1406,7 @@ public final class LaunchUpdateDialogAutoConfirmer
      */
     static boolean runBounded(Consumer<Runnable> submit, Runnable work, long timeoutMs)
     {
-        CountDownLatch done = new CountDownLatch(1);
-        submit.accept(() -> {
-            try
-            {
-                work.run();
-            }
-            finally
-            {
-                done.countDown();
-            }
-        });
-        try
-        {
-            return done.await(timeoutMs, TimeUnit.MILLISECONDS);
-        }
-        catch (InterruptedException e)
-        {
-            Thread.currentThread().interrupt();
-            return false;
-        }
+        return BoundedUiCall.run(submit, work, timeoutMs);
     }
 
     /**
@@ -1435,28 +1435,17 @@ public final class LaunchUpdateDialogAutoConfirmer
      */
     private static boolean reconcileOnUiThread(Display display, long timeoutMs)
     {
-        if (display.isDisposed())
+        BoundedUiCall.Dispatch dispatched = BoundedUiCall.dispatch(BoundedUiCall.executorOrNull(display),
+            () -> reconcileFilter(display), timeoutMs, BoundedUiCall.UiThreadPolicy.RUN_INLINE);
+        if (dispatched.outcome() == BoundedUiCall.Outcome.SUBMISSION_FAILED)
         {
-            return true;
+            if (dispatched.failure() instanceof SWTException)
+            {
+                return true;
+            }
+            throw dispatched.failure();
         }
-        if (display.getThread() == Thread.currentThread())
-        {
-            // Already on the UI thread: handing the work to asyncExec and then waiting for it
-            // would block the very thread that has to run it.
-            reconcileFilter(display);
-            return true;
-        }
-        try
-        {
-            // A late run after this timeout is harmless: reconcileFilter re-reads the arm state
-            // under LOCK, so it sees whatever the caller left behind rather than a stale decision.
-            return runBounded(display::asyncExec, () -> reconcileFilter(display), timeoutMs);
-        }
-        catch (SWTException e)
-        {
-            // ERROR_DEVICE_DISPOSED race on shutdown - nothing to (un)install.
-            return true;
-        }
+        return dispatched.outcome() != BoundedUiCall.Outcome.TIMED_OUT;
     }
 
     /**

@@ -64,12 +64,14 @@ from harness import (
     assert_not_contains,
     assert_no_diff,
     settle_or_fail,
+    split_markdown_row,
     e2e_test,
     calls_aborted,
     split_markdown_row,
     PROJECT,
     PROJECT_DIR,
     REPO_ROOT,
+    SOURCE_ROOT,
 )
 
 # A real, existing DIRECTORY on disk (valid importPath shape) that is NOT a
@@ -79,7 +81,7 @@ from harness import (
 _EXISTING_DIR = REPO_ROOT
 # A real, existing FILE (exists() true, isDirectory() false) to hit the
 # "not a directory" branch. CLAUDE.md is committed at the repo root.
-_EXISTING_FILE = os.path.join(REPO_ROOT, "CLAUDE.md")
+_EXISTING_FILE = os.path.join(SOURCE_ROOT, "CLAUDE.md")
 # A path that does not exist at all.
 _MISSING_PATH = os.path.join(REPO_ROOT, "no_such_import_dir_e2e_zzz")
 # The throwaway project the round-trip imports into (never the committed fixture).
@@ -102,9 +104,9 @@ def _project_state(list_projects_markdown, project_name):
         line = line.strip()
         if not line.startswith("|") or set(line) <= set("|- "):
             continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
+        cells = split_markdown_row(line)
         if len(cells) >= 2 and cells[0] == project_name:
-            return cells[1].strip().lower()
+            return cells[1]
     return None
 
 
@@ -145,25 +147,25 @@ def test_import_round_trip_leaves_a_project_edt_has_started():
         if "state: ready" in im.text:
             assert_contains(im.text, "projectReady: true",
                             "a ready project must be reported as ready")
+            # No settling here: ready is a promise about the state AT RETURN. Waiting before
+            # this independent read would let an early-returning implementation hide its bug.
+            lp = call("list_projects", {})
+            assert_ok(lp, "immediate ready-state read-back after import")
+            state = _project_state(lp.text, _ROUND_TRIP_PROJECT)
+            assert state == "ready", \
+                "import reported ready before the exact project was ready, got %r:\n%s" % (state, lp.text)
         else:
             assert_contains(im.text, "projectReady: false",
                             "a project still starting must not be reported as ready")
-        # Settle on BOTH branches, not just the 'importing' one: the tool's `ready` means the
-        # project CONTEXT is started (isStarted + a DtProject exists), while list_projects reports
-        # `building` until EDT has finished the derived data. Going straight to the assertion below
-        # on the ready branch would be a race, not a check. settle_or_fail, not the bare wait: a
-        # wait that ran out would otherwise be dropped on the floor and the assertion below would
-        # then fail on a `building` row with no diagnostics about WHY EDT never settled.
-        settle_or_fail("the list_projects ground-truth check of the imported project")
-
-        # GROUND TRUTH, independent of the import's own answer: list_projects must report the
-        # imported project as an EDT project in state 'ready' - i.e. EDT really started it.
-        lp = call("list_projects", {})
+            # Only an explicitly importing answer permits waiting for EDT's derived data.
+            settle_or_fail("the list_projects ground-truth check of the importing project")
+            lp = call("list_projects", {})
+            assert_ok(lp, "ready-state read-back after an explicitly importing result")
+            state = _project_state(lp.text, _ROUND_TRIP_PROJECT)
+            assert state == "ready", \
+                "the imported project must reach state 'ready', got %r:\n%s" % (state, lp.text)
         assert_contains(lp.text, _ROUND_TRIP_PROJECT,
                         "the imported project must appear in list_projects")
-        state = _project_state(lp.text, _ROUND_TRIP_PROJECT)
-        assert state == "ready", \
-            "the imported project must reach state 'ready', got %r:\n%s" % (state, lp.text)
     finally:
         _ensure_absent(_ROUND_TRIP_PROJECT)
         shutil.rmtree(dump_dir, ignore_errors=True)

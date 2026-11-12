@@ -7,7 +7,6 @@
 package com.ditrix.edt.mcp.server.tools.impl;
 
 import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,7 +25,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
@@ -42,6 +40,12 @@ import org.eclipse.core.runtime.Status;
 import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.emf.common.util.EList;
 import org.eclipse.emf.ecore.EAttribute;
+import org.eclipse.emf.ecore.EClass;
+import static com.ditrix.edt.mcp.server.utils.MetadataRegistration.directChildren;
+import static com.ditrix.edt.mcp.server.utils.MetadataRegistration.directChildText;
+import static com.ditrix.edt.mcp.server.utils.MetadataRegistration.simpleText;
+import static com.ditrix.edt.mcp.server.utils.MetadataRegistration.elementName;
+import com.ditrix.edt.mcp.server.utils.MetadataRegistration;
 import org.eclipse.emf.ecore.EObject;
 import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
@@ -49,7 +53,6 @@ import org.eclipse.emf.ecore.util.EcoreUtil;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
 
 import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.bm.core.IBmTransaction;
@@ -90,12 +93,15 @@ import com.ditrix.edt.mcp.server.protocol.McpKeys;
 import com.ditrix.edt.mcp.server.protocol.ToolResult;
 import com.ditrix.edt.mcp.server.tools.base.AbstractMetadataWriteTool;
 import com.ditrix.edt.mcp.server.tools.base.WriteScope;
+import com.ditrix.edt.mcp.server.tools.base.WriteExportBarrier;
+import com.ditrix.edt.mcp.server.utils.BuildUtils;
 import com.ditrix.edt.mcp.server.tools.reference.MetadataReferenceService;
 import com.ditrix.edt.mcp.server.utils.BmModelResolver;
 import com.ditrix.edt.mcp.server.utils.BmObjectAddress;
 import com.ditrix.edt.mcp.server.utils.BmTransactions;
 import com.ditrix.edt.mcp.server.utils.BoundedJob;
 import com.ditrix.edt.mcp.server.utils.ConsentPreview;
+import com.ditrix.edt.mcp.server.utils.ContentHash;
 import com.ditrix.edt.mcp.server.utils.DestructiveConsentGate;
 import com.ditrix.edt.mcp.server.utils.FormAttributeDeletion;
 import com.ditrix.edt.mcp.server.utils.FormElementWriter;
@@ -104,6 +110,7 @@ import com.ditrix.edt.mcp.server.utils.FormStructureReader;
 import com.ditrix.edt.mcp.server.utils.FormValidationException;
 import com.ditrix.edt.mcp.server.utils.McpJobs;
 import com.ditrix.edt.mcp.server.utils.MetadataNodeResolver;
+import com.ditrix.edt.mcp.server.utils.MetadataDeleteBatch;
 import com.ditrix.edt.mcp.server.utils.MetadataPathResolver;
 import com.ditrix.edt.mcp.server.utils.MetadataScope;
 import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils;
@@ -117,6 +124,7 @@ import com.ditrix.edt.mcp.server.utils.SubsystemUtils;
 import com.ditrix.edt.mcp.server.utils.VendorSupportGuard;
 import com.ditrix.edt.mcp.server.utils.XdtoWriteException;
 import com.ditrix.edt.mcp.server.utils.XdtoWriter;
+import com.ditrix.edt.mcp.server.utils.WrittenObjectMarkers;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -512,21 +520,30 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             + "blocks it (force is ignored) and no cross-object cascade runs, so references from elsewhere (a " //$NON-NLS-1$
             + "button's command, an XDTO type) are left broken - re-check with " //$NON-NLS-1$
             + "get_metadata_details (find_references takes TOP-level FQNs only, not these members). " //$NON-NLS-1$
-            + "Parameters and examples: get_tool_guide('delete_metadata')."; //$NON-NLS-1$
+            + "Use operations for atomic deletes of members of one form; preview the complete batch "
+            + "before confirming. Parameters and examples: get_tool_guide('delete_metadata')."; //$NON-NLS-1$
     }
 
     @Override
     public String getInputSchema()
     {
-        return JsonSchemaBuilder.object()
+        String schema = JsonSchemaBuilder.object()
             .stringProperty(McpKeys.PROJECT_NAME,
                 "EDT project name (required).", true) //$NON-NLS-1$
             .stringProperty("fqn", //$NON-NLS-1$
-                "Full-name FQN of the node to delete (required), e.g. 'Catalog.Products' or " //$NON-NLS-1$
+                "Full-name FQN of the node to delete (provide fqn OR operations), e.g. 'Catalog.Products' or " //$NON-NLS-1$
                 + "'Document.SalesOrder.Attribute.Amount' (type / kind tokens may be English or " //$NON-NLS-1$
-                + "Russian; the Name parts are the programmatic Name, not the synonym).", true) //$NON-NLS-1$
+                + "Russian; the Name parts are the programmatic Name, not the synonym).") //$NON-NLS-1$
+            .objectArrayProperty(MetadataDeleteBatch.OPERATIONS,
+                "Atomic batch of {action:'delete', fqn:'...'} operations on ONE form's items, commands, "
+                + "parameters or handlers. Call without confirm to preview, then confirm=true. "
+                + "Attributes/columns, force=true and timeout are unsupported; unknown fields are refused.")
+            .booleanProperty(MetadataDeleteBatch.ATOMIC, "Batch only: must be true (default). Model all-or-nothing; disk export is separate.")
             .booleanProperty("confirm", //$NON-NLS-1$
                 "true = execute the deletion; default false = preview only.") //$NON-NLS-1$
+            .stringProperty("expectedHash", //$NON-NLS-1$
+                "Optional form-attribute/column scope guard: pass the preview's contentHash on confirm=true; " //$NON-NLS-1$
+                + "a changed scope refuses without writing. Omit to use the current scope. Ignored for other targets.") //$NON-NLS-1$
             .booleanProperty("force", //$NON-NLS-1$
                 "true = delete despite incoming references the refactoring cannot auto-clean or " //$NON-NLS-1$
                 + "platform prohibitions (only the incoming references are left dangling); never " //$NON-NLS-1$
@@ -540,11 +557,53 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
                 + "still finish a confirm=true delete, so verify the model before retrying. Does " //$NON-NLS-1$
                 + "not cover the pre-flight cascade settle (a separate 60s bound).") //$NON-NLS-1$
             .build();
+        JsonObject object = JsonParser.parseString(schema).getAsJsonObject();
+        JsonObject operations = object.getAsJsonObject("properties").getAsJsonObject(MetadataDeleteBatch.OPERATIONS);
+        operations.addProperty("minItems", 1);
+        operations.addProperty("maxItems", MetadataDeleteBatch.MAX_OPERATIONS);
+        JsonObject item = JsonParser.parseString(JsonSchemaBuilder.object()
+            .enumProperty("action", "Operation to perform", true, "delete")
+            .stringProperty("fqn", "Form member address", true).build()).getAsJsonObject();
+        item.addProperty("additionalProperties", false);
+        operations.add("items", item);
+        JsonArray alternatives = new JsonArray();
+        for (String key : List.of("fqn", MetadataDeleteBatch.OPERATIONS))
+        {
+            JsonObject alternative = new JsonObject();
+            JsonArray required = new JsonArray();
+            required.add(key);
+            alternative.add("required", required);
+            alternatives.add(alternative);
+        }
+        object.add("oneOf", alternatives);
+        return GsonProvider.toJson(object);
+    }
+
+    @Override
+    protected String validateRequest(Map<String, String> params)
+    {
+        if (params.containsKey(MetadataDeleteBatch.OPERATIONS))
+        {
+            MetadataDeleteBatch batch = MetadataDeleteBatch.parse(params);
+            return batch.errors.isEmpty() ? null : batch.refusal();
+        }
+        return params.containsKey("atomic")
+            ? ToolResult.error("atomic is only supported with operations. Omit atomic for a single fqn.").toJson() : null;
+    }
+
+    @Override
+    protected boolean reportsWrittenObjectMarkers(Map<String, String> params)
+    {
+        return params.containsKey(MetadataDeleteBatch.OPERATIONS);
     }
 
     @Override
     protected long uiThreadBoundMs(Map<String, String> params)
     {
+        if (params.containsKey(MetadataDeleteBatch.OPERATIONS))
+        {
+            return 0L;
+        }
         return resolveDeleteTimeoutMs(params);
     }
 
@@ -681,10 +740,11 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     @Override
     public String getOutputSchema()
     {
-        return JsonSchemaBuilder.object()
+        return WrittenObjectMarkers.declareOutput(JsonSchemaBuilder.object()
             .booleanProperty("success", "Whether the request succeeded", true) //$NON-NLS-1$ //$NON-NLS-2$
             .stringProperty(McpKeys.ACTION, "Either 'preview', 'executed' or 'blocked'") //$NON-NLS-1$
             .stringProperty("fqn", "FQN of the node targeted for deletion") //$NON-NLS-1$ //$NON-NLS-2$
+            .stringProperty("contentHash", "Form-attribute/column preview token; pass as expectedHash on confirm") //$NON-NLS-1$ //$NON-NLS-2$
             .stringProperty(KEY_REFACTORING_TITLE, "Title of the delete refactoring (preview)") //$NON-NLS-1$
             .objectArrayProperty(KEY_ITEMS, "Metadata items the deletion would remove (preview)") //$NON-NLS-1$
             .booleanProperty(KEY_BLOCKING, "Whether blockingReferences or platformProhibitions BLOCK " //$NON-NLS-1$
@@ -714,12 +774,28 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
                 + "(partial forced-delete result only)") //$NON-NLS-1$
             .stringProperty(McpKeys.MESSAGE, "Human-readable description of the result") //$NON-NLS-1$
             .stringArrayProperty(WriteScope.RESULT_MEMBER, WriteScope.OUTPUT_SCHEMA_DESCRIPTION)
+            .booleanProperty("atomic", "Batch model transaction is all-or-nothing; disk export is separate")
+            .integerArrayProperty("applied", "Zero-based committed operation indexes; empty for a preview/refusal/rollback")
+            .integerArrayProperty("possibleApplied", "Indexes with an unknown outcome; inspect before retrying")
+            .objectArrayProperty("errors", "All independent preflight errors with operationIndex, reason and error")
+            .integerProperty("failedOperationIndex", "First failed operation, zero-based")
+            .booleanProperty("committed", "Whether the complete batch committed to the model")
+            .booleanProperty("rollbackPerformed", "Whether a failing task rolled back the batch")
+            .stringProperty("rollbackState", "unknown for an opaque transaction failure; notPerformed for a known commit")
+            .booleanProperty("exportSubmitted", "Whether the form export was queued; not proof of correct bytes")
+            .stringProperty("persistenceState", "Batch export state, separate from model commit")
+            .stringProperty("remainingState", "What the batch left in the project")
+            .stringProperty("safeRetry", "Instructions for a safe retry"))
             .build();
     }
 
     @Override
     protected String beforeUiThreadOrError(Map<String, String> params)
     {
+        if (params.containsKey(MetadataDeleteBatch.OPERATIONS))
+        {
+            return null;
+        }
         String projectName = JsonUtils.extractStringArgument(params, McpKeys.PROJECT_NAME);
         String fqn = JsonUtils.extractStringArgument(params, "fqn"); //$NON-NLS-1$
         if (projectName == null || projectName.isEmpty() || fqn == null || fqn.isEmpty())
@@ -756,6 +832,10 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     @Override
     protected String executeOnUiThread(Map<String, String> params)
     {
+        if (params.containsKey("operations"))
+        {
+            return deleteFormBatch(params);
+        }
         String err = JsonUtils.requireArguments(params, McpKeys.PROJECT_NAME, "fqn"); //$NON-NLS-1$
         if (err != null)
         {
@@ -771,6 +851,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             WriteScope.recordNothingQueued();
         }
         boolean force = JsonUtils.extractBooleanArgument(params, "force", false); //$NON-NLS-1$
+        String expectedHash = JsonUtils.extractStringArgument(params, "expectedHash"); //$NON-NLS-1$
 
         // Normalized BEFORE the context is resolved, because the FQN goes IN: the specialized
         // deletes below (predefined item, XDTO member) return before the generic path that
@@ -804,7 +885,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             {
                 return ToolResult.error(columnErr).toJson();
             }
-            return deleteFormMember(ctx, normFqn, formRef, confirm);
+            return deleteFormMember(ctx, normFqn, formRef, confirm, expectedHash);
         }
 
         // A 4-part form FQN (Type.Object.Form.FormName) addresses the FORM OBJECT itself. create_metadata
@@ -848,6 +929,19 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             return ToolResult.error("IMdRefactoringService not available").toJson(); //$NON-NLS-1$
         }
 
+        final String requested = normFqn;
+        return prepareWrite(ctx.project, () -> {
+            ProjectContext current = com.ditrix.edt.mcp.server.HostKind.current()
+                == com.ditrix.edt.mcp.server.HostKind.HEADLESS
+                ? resolveProjectAndScope(projectName, requested) : ctx;
+            if (current.hasError()) return () -> current.error;
+            return planGenericDelete(current, fqn, requested, confirm, force, refactoringService);
+        });
+    }
+
+    private java.util.function.Supplier<String> planGenericDelete(ProjectContext ctx, String fqn,
+        String normFqn, boolean confirm, boolean force, IMdRefactoringService refactoringService)
+    {
         // A nested subsystem is a separate top object referenced by its parent, so the generic
         // containment grammar cannot resolve it. Keep a one-level subsystem on the existing path.
         String[] subsystemChain = SubsystemUtils.parseSubsystemPath(normFqn);
@@ -856,31 +950,29 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             BmModelResolver.Resolution modelResolution = BmModelResolver.resolveForRefactoring(ctx.project);
             if (!modelResolution.isAvailable())
             {
-                return unavailableModelError(modelResolution, "Nothing was deleted."); //$NON-NLS-1$
+                return () -> unavailableModelError(modelResolution, "Nothing was deleted."); //$NON-NLS-1$
             }
             final String chainFqn = normFqn;
-            ChainTarget target = BmTransactions.read(modelResolution.getModel(),
-                "ResolveNestedSubsystemDelete", (tx, pm) -> //$NON-NLS-1$
-                    resolveNestedSubsystemTarget(ctx.scope, chainFqn));
+            ChainTarget target = resolveNestedSubsystemTarget(ctx.scope, chainFqn);
             if (target.error != null)
             {
-                return ToolResult.error(target.error).toJson();
+                return () -> ToolResult.error(target.error).toJson();
             }
-            return prepareMdClassDelete(ctx.project, target.fqn, target.object, target.containerFqn,
+            return planMdClassDelete(ctx.project, target.fqn, target.fqn, target.object, target.containerFqn,
                 confirm, force, refactoringService, modelResolution);
         }
 
         // Exact-first resolve with the yo-addressing fallback: create_metadata normalizes
         // 'yo'->'ye' in names by default, so a caller re-typing the original yo spelling
         // would miss the stored name — the resolver retries the normalized FQN.
-        MetadataNodeResolver.ResolvedNode resolved =
-            MetadataNodeResolver.resolveExistingWithYoFallback(ctx.scope, normFqn);
+        final String requestedFqn = normFqn;
+        MetadataNodeResolver.ResolvedNode resolved = MetadataNodeResolver.resolveExistingWithYoFallback(ctx.scope, requestedFqn);
         MetadataNodeResolver.MetadataNode node = resolved.node;
         if (node == null)
         {
-            return ToolResult.error(nodeNotFound(fqn)
-                + MetadataNodeResolver.yoNotFoundHint(normFqn)
-                + ctx.scope.addressingHint(normFqn)).toJson();
+            return () -> ToolResult.error(nodeNotFound(fqn)
+                + MetadataNodeResolver.yoNotFoundHint(requestedFqn)
+                + ctx.scope.addressingHint(requestedFqn)).toJson();
         }
         if (resolved.yoFallback)
         {
@@ -894,8 +986,8 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         // Read WHILE THE NODE IS STILL THERE: after the refactoring the node is detached, and the
         // container is what has to be re-exported (see performDeleteRefactoring).
         String containerFqn = containerExportFqn(node.owner);
-        return prepareResolvedDelete(ctx.project, node, normFqn, containerFqn, confirm, force,
-            refactoringService, modelResolution);
+        return planMdClassDelete(ctx.project, normFqn, deleteTargetFqn(node, normFqn), node.object,
+            containerFqn, confirm, force, refactoringService, modelResolution);
     }
 
     /**
@@ -908,7 +1000,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         String containerFqn, boolean confirm, boolean force, IMdRefactoringService refactoringService,
         BmModelResolver.Resolution modelResolution)
     {
-        return prepareMdClassDelete(project, normFqn, deleteTargetFqn(node, normFqn), node.object,
+        return prepareMdClassDelete(project, normFqn, readPreparation(project, () -> deleteTargetFqn(node, normFqn)), node.object,
             containerFqn, confirm, force, refactoringService, modelResolution);
     }
 
@@ -1080,21 +1172,39 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         String containerFqn, boolean confirm, boolean force,
         IMdRefactoringService refactoringService, BmModelResolver.Resolution modelResolution)
     {
+        return prepareWrite(project, () -> planMdClassDelete(project, normFqn, registrationFqn,
+            object, containerFqn, confirm, force, refactoringService, modelResolution));
+    }
+
+    private java.util.function.Supplier<String> planMdClassDelete(IProject project, String normFqn, String registrationFqn, MdObject object,
+        String containerFqn, boolean confirm, boolean force,
+        IMdRefactoringService refactoringService, BmModelResolver.Resolution modelResolution)
+    {
         if (!modelResolution.isAvailable())
         {
-            return unavailableModelError(modelResolution, "Nothing was deleted."); //$NON-NLS-1$
+            return () -> unavailableModelError(modelResolution, "Nothing was deleted."); //$NON-NLS-1$
         }
 
         List<String> descendants = object instanceof Subsystem
-            ? BmTransactions.read(modelResolution.getModel(), "ReadSubsystemDeleteDescendants", //$NON-NLS-1$
-                (tx, pm) -> nestedSubsystems((Subsystem)object, normFqn))
+            ? com.ditrix.edt.mcp.server.HostKind.current() == com.ditrix.edt.mcp.server.HostKind.HEADLESS
+                ? nestedSubsystems((Subsystem)object, normFqn)
+                : BmTransactions.read(modelResolution.getModel(), "ReadSubsystemDeleteDescendants", //$NON-NLS-1$
+                    (tx, pm) -> nestedSubsystems((Subsystem)object, normFqn))
             : Collections.emptyList();
 
+        return () -> createMdClassDelete(project, normFqn, registrationFqn, object, containerFqn,
+            confirm, force, refactoringService, descendants);
+    }
+
+    private String createMdClassDelete(IProject project, String normFqn, String registrationFqn,
+        MdObject object, String containerFqn, boolean confirm, boolean force,
+        IMdRefactoringService refactoringService, List<String> descendants)
+    {
+        // Native initialization builds the workspace, so it must run after the preparation read ends.
         IRefactoring refactoring;
         try
         {
-            refactoring = refactoringService.createMdObjectDeleteRefactoring(
-                Collections.singletonList(object));
+            refactoring = refactoringService.createMdObjectDeleteRefactoring(Collections.singletonList(object));
         }
         catch (RuntimeException e)
         {
@@ -1106,11 +1216,20 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         }
         if (refactoring == null)
         {
-            return ToolResult.error("Failed to create delete refactoring for: " + normFqn).toJson(); //$NON-NLS-1$
+            return ToolResult.error("Failed to create delete refactoring for: " + normFqn
+                + ". Nothing was deleted. Use get_metadata_details to verify the target, then retry.").toJson(); //$NON-NLS-1$
         }
 
-        return confirm ? performDelete(project, normFqn, registrationFqn, containerFqn, refactoring, force,
-            descendants) : buildPreview(normFqn, refactoring, descendants);
+        return DeleteMetadataTool.<java.util.function.Supplier<String>>readPreparation(project, () -> {
+            if (!confirm)
+            {
+                String preview = buildPreview(normFqn, refactoring, descendants);
+                return () -> preview;
+            }
+            RefactoringProblems problems = collectRefactoringProblems(refactoring);
+            return () -> performDelete(project, normFqn, registrationFqn, containerFqn, refactoring, force,
+                descendants, problems);
+        }).get();
     }
 
     private String buildPreview(String fqn, IRefactoring refactoring, List<String> descendants)
@@ -1146,7 +1265,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         // entries are references. Every other problem is exposed separately as a platform prohibition.
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_PREVIEW)
-            .put("fqn", fqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(fqn)) //$NON-NLS-1$
             .put(KEY_REFACTORING_TITLE, title)
             .put(KEY_ITEMS, allItems)
             .put(KEY_BLOCKING, hasBlocking);
@@ -1156,13 +1275,12 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     }
 
     private String performDelete(IProject project, String fqn, String registrationFqn, String containerFqn,
-        IRefactoring refactoring, boolean force, List<String> descendants)
+        IRefactoring refactoring, boolean force, List<String> descendants, RefactoringProblems problems)
     {
         String projectName = project.getName();
         // EDT's own problem check: genuine incoming references and platform prohibitions are both
         // blocking conditions, but they remain distinct in the response. 'confirm' is the preview
         // gate; 'force' overrides either block - except a vendor-support lock, which it never does.
-        RefactoringProblems problems = collectRefactoringProblems(refactoring);
         if (problems.blocksDelete() && (!force || problems.supportLocks > 0))
         {
             ToolResult blocked = ToolResult.error(blockedMessage(fqn, problems))
@@ -1268,9 +1386,10 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
                     + "node; re-check it before relying on it."; //$NON-NLS-1$
             ToolResult result = ToolResult.success()
                 .put(McpKeys.ACTION, VAL_EXECUTED)
-                .put("fqn", fqn) //$NON-NLS-1$
+                .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(fqn)) //$NON-NLS-1$
                 .put("forced", force); //$NON-NLS-1$
-            if (force)
+            if (force || com.ditrix.edt.mcp.server.HostKind.current()
+                == com.ditrix.edt.mcp.server.HostKind.HEADLESS)
             {
                 String registeringFile = registeringFilePath(containerFqn);
                 if (containerFqn != null && !containerFqn.isEmpty())
@@ -1384,6 +1503,17 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     protected String refreshAfterExportAwait(Map<String, String> params, String result,
         boolean drainEstablished)
     {
+        if (params.containsKey(MetadataDeleteBatch.OPERATIONS))
+        {
+            JsonObject batch = JsonParser.parseString(result).getAsJsonObject();
+            if (VAL_EXECUTED.equals(resultString(batch, McpKeys.ACTION)))
+            {
+                batch.addProperty("persistenceState", !batch.get("exportSubmitted").getAsBoolean()
+                    ? "exportNotSubmitted" : drainEstablished
+                        ? "exportDrainedBytesUnverified" : "exportUnobservable");
+            }
+            return GsonProvider.toJson(batch);
+        }
         JsonObject object;
         try
         {
@@ -1406,21 +1536,55 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             return GsonProvider.toJson(object);
         }
         if (!VAL_EXECUTED.equals(resultString(object, McpKeys.ACTION))
-            || !object.has("forced") || !object.get("forced").getAsBoolean() //$NON-NLS-1$ //$NON-NLS-2$
+            || (!object.has("forced") || !object.get("forced").getAsBoolean()) //$NON-NLS-1$ //$NON-NLS-2$
+                && com.ditrix.edt.mcp.server.HostKind.current() != com.ditrix.edt.mcp.server.HostKind.HEADLESS
             || !object.has(KEY_REGISTERING_CONTAINER))
         {
             return registrationTarget == null ? result : GsonProvider.toJson(object);
         }
 
         String projectName = JsonUtils.extractStringArgument(params, McpKeys.PROJECT_NAME);
+        if (!drainEstablished && com.ditrix.edt.mcp.server.HostKind.current()
+            == com.ditrix.edt.mcp.server.HostKind.HEADLESS)
+        {
+            return WriteExportBarrier.notConfirmedAfterMutation(projectName, BuildUtils.DiskExportState.UNOBSERVABLE);
+        }
         String targetFqn = registrationTarget != null && registrationTarget.isJsonPrimitive()
             ? registrationTarget.getAsString() : resultString(object, "fqn"); //$NON-NLS-1$
         String registeringFile = resultString(object, KEY_REGISTERING_FILE);
         String registeringContainer = resultString(object, KEY_REGISTERING_CONTAINER);
         RegistrationState state = registeringFile == null ? RegistrationState.UNVERIFIABLE
             : registrationVerifier.verify(projectName, registeringFile, registeringContainer, targetFqn);
+        if (state != RegistrationState.ABSENT && com.ditrix.edt.mcp.server.HostKind.current()
+            == com.ditrix.edt.mcp.server.HostKind.HEADLESS)
+        {
+            // A drained queue does not prove the root's bytes; retry its native export once, off SWT/BM.
+            var context = com.ditrix.edt.mcp.server.utils.ProjectContext.of(projectName);
+            if (registeringFile != null && context.exists() && submitContainerExport(context.project(), registeringContainer))
+            {
+                BuildUtils.DiskExportState retry = waitForRegistrationRetry(context.project());
+                if (retry != BuildUtils.DiskExportState.DRAINED)
+                {
+                    return WriteExportBarrier.notConfirmedAfterMutation(projectName, retry);
+                }
+                state = registrationVerifier.verify(projectName, registeringFile, registeringContainer, targetFqn);
+            }
+            if (state != RegistrationState.ABSENT)
+            {
+                return ToolResult.errorAfterMutation("The node was deleted from the model, but '" + registeringFile
+                    + "' still registers it or could not be read. Use resync_to_disk and inspect the file "
+                    + "before retrying or committing.").put(KEY_REGISTERING_FILE, registeringFile)
+                    .put(KEY_REGISTERING_CONTAINER, registeringContainer).toJson();
+            }
+        }
         if (state == RegistrationState.ABSENT)
         {
+            if (com.ditrix.edt.mcp.server.HostKind.current() == com.ditrix.edt.mcp.server.HostKind.HEADLESS
+                && "Configuration".equals(registeringContainer)) //$NON-NLS-1$
+            {
+                String directoryError = deletedDirectoryError(projectName, targetFqn);
+                if (directoryError != null) return directoryError;
+            }
             object.remove(KEY_REGISTERING_FILE);
             object.remove(KEY_REGISTERING_CONTAINER);
             return GsonProvider.toJson(object);
@@ -1451,6 +1615,24 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         }
         markNotPersisted(object, verificationLag);
         return GsonProvider.toJson(object);
+    }
+
+    protected BuildUtils.DiskExportState waitForRegistrationRetry(IProject project)
+    {
+        return BuildUtils.waitForDiskExport(project, WriteExportBarrier.DEADLINE_MS);
+    }
+
+    /** Export completion includes cleanup, but a drained failed cleanup cannot prove removal. */
+    private static String deletedDirectoryError(String projectName, String fqn)
+    {
+        if (fqn == null || fqn.split("\\.").length != 2) return null; //$NON-NLS-1$
+        String file = registeringFilePath(MetadataTypeUtils.toCanonicalEnglishFqn(fqn));
+        var context = com.ditrix.edt.mcp.server.utils.ProjectContext.of(projectName);
+        var location = file != null && context.exists() ? context.project().getFile(file).getLocation() : null;
+        if (location != null && java.nio.file.Files.notExists(location.toFile().toPath().getParent())) return null;
+        return ToolResult.errorAfterMutation("The object was deleted from the model, but removal of its directory "
+            + "for '" + fqn + "' was not verified after disk export and cleanup. Inspect the directory and "
+            + "get_project_errors before retrying or committing.").toJson();
     }
 
     /** The success clause a confirmed form-member delete ends its first sentence with. */
@@ -1495,41 +1677,8 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     private static RegistrationState verifyRegistrationOnDisk(String projectName,
         String registeringFile, String registeringContainer, String targetFqn)
     {
-        if (projectName == null || registeringFile == null || registeringContainer == null
-            || targetFqn == null)
-        {
-            return RegistrationState.UNVERIFIABLE;
-        }
-        try
-        {
-            // Fully qualified on purpose: the inherited AbstractMetadataWriteTool.ProjectContext
-            // shadows the utils one, so an import here would not compile.
-            com.ditrix.edt.mcp.server.utils.ProjectContext projectContext =
-                com.ditrix.edt.mcp.server.utils.ProjectContext.of(projectName);
-            IProject project = projectContext.project();
-            if (!projectContext.exists())
-            {
-                return RegistrationState.UNVERIFIABLE;
-            }
-            IFile file = project.getFile(new Path(registeringFile));
-            if (!file.exists())
-            {
-                return RegistrationState.UNVERIFIABLE;
-            }
-            DocumentBuilderFactory factory = SecureXml.documentBuilderFactory();
-            try (InputStream input = file.getContents())
-            {
-                Element root = factory.newDocumentBuilder().parse(input).getDocumentElement();
-                return containsRegistration(root, registeringContainer, targetFqn)
-                    ? RegistrationState.PRESENT : RegistrationState.ABSENT;
-            }
-        }
-        catch (Exception e)
-        {
-            Activator.logError("delete_metadata: could not verify '" + targetFqn + "' in '" //$NON-NLS-1$ //$NON-NLS-2$
-                + registeringFile + "'", e); //$NON-NLS-1$
-            return RegistrationState.UNVERIFIABLE;
-        }
+        return RegistrationState.valueOf(MetadataRegistration.verify(projectName, registeringFile,
+            registeringContainer, targetFqn).name());
     }
 
     /**
@@ -1754,137 +1903,9 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         return false;
     }
 
-    /** Package-visible pure XML check for the registering-file tests. */
-    static boolean containsRegistration(Element root, String registeringContainer, String targetFqn)
+    static boolean containsRegistration(Element root, String container, String fqn)
     {
-        if (root == null || registeringContainer == null || targetFqn == null)
-        {
-            return false;
-        }
-        if ("Configuration".equals(registeringContainer)) //$NON-NLS-1$
-        {
-            String[] target = targetFqn.split("\\."); //$NON-NLS-1$
-            if (target.length != 2)
-            {
-                return false;
-            }
-            String feature = MetadataTypeUtils.getConfigReferenceName(target[0]);
-            for (Element child : directChildren(root, feature))
-            {
-                if (targetFqn.equalsIgnoreCase(child.getTextContent().trim()))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        String prefix = registeringContainer + "."; //$NON-NLS-1$
-        if (targetFqn.length() <= prefix.length()
-            || !targetFqn.regionMatches(true, 0, prefix, 0, prefix.length()))
-        {
-            return false;
-        }
-        String[] remainder = targetFqn.substring(prefix.length()).split("\\."); //$NON-NLS-1$
-        if (remainder.length == 0 || (remainder.length & 1) != 0)
-        {
-            return false;
-        }
-        Element current = root;
-        String addressedPrefix = registeringContainer;
-        for (int i = 0; i < remainder.length; i += 2)
-        {
-            // A subsystem's registration is a reference, deliberately absent from the generic
-            // containment-kind map. Recognize it only for this serialized registration check.
-            boolean subsystem = SubsystemUtils.isSubsystemTypeToken(remainder[i]);
-            String feature = subsystem ? "subsystems" //$NON-NLS-1$
-                : MetadataNodeResolver.featureNameForKind(remainder[i]);
-            if (feature == null)
-            {
-                return false;
-            }
-            String name = remainder[i + 1];
-            addressedPrefix += "." + remainder[i] + "." + name; //$NON-NLS-1$ //$NON-NLS-2$
-            Element match = null;
-            for (Element candidate : directChildren(current, feature))
-            {
-                // EDT writes a subsystem reference as the bare child Name; tolerate a full chain too.
-                if ((subsystem && name.equalsIgnoreCase(simpleText(candidate)))
-                    || addressedPrefix.equalsIgnoreCase(simpleText(candidate))
-                    || name.equalsIgnoreCase(directChildText(candidate, "name"))) //$NON-NLS-1$
-                {
-                    match = candidate;
-                    break;
-                }
-            }
-            if (match == null)
-            {
-                return false;
-            }
-            current = match;
-        }
-        return true;
-    }
-
-    /**
-     * The direct children that belong to THIS document's registration vocabulary: the local name
-     * matches AND the element is either unqualified (how EDT writes every child of an {@code .mdo})
-     * or in the document element's own namespace. A same-named element from a FOREIGN namespace is
-     * not a registration, and counting one would report a completed delete as partial.
-     */
-    private static List<Element> directChildren(Element parent, String name)
-    {
-        List<Element> result = new ArrayList<>();
-        if (parent == null || name == null)
-        {
-            return result;
-        }
-        Document owner = parent.getOwnerDocument();
-        Element root = owner == null ? null : owner.getDocumentElement();
-        String documentNamespace = root == null ? null : root.getNamespaceURI();
-        NodeList children = parent.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++)
-        {
-            Node child = children.item(i);
-            if (child instanceof Element element && name.equals(elementName(element))
-                && belongsToDocument(element, documentNamespace))
-            {
-                result.add(element);
-            }
-        }
-        return result;
-    }
-
-    /** Whether an element is part of the document's own vocabulary rather than a foreign one. */
-    private static boolean belongsToDocument(Element element, String documentNamespace)
-    {
-        String namespace = element.getNamespaceURI();
-        return namespace == null || namespace.equals(documentNamespace);
-    }
-
-    private static String directChildText(Element parent, String name)
-    {
-        List<Element> children = directChildren(parent, name);
-        return children.isEmpty() ? "" : children.get(0).getTextContent().trim(); //$NON-NLS-1$
-    }
-
-    private static String simpleText(Element element)
-    {
-        NodeList children = element.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++)
-        {
-            if (children.item(i) instanceof Element)
-            {
-                return ""; //$NON-NLS-1$
-            }
-        }
-        return element.getTextContent().trim();
-    }
-
-    private static String elementName(Element element)
-    {
-        String local = element.getLocalName();
-        return local == null ? element.getNodeName() : local;
+        return MetadataRegistration.containsRegistration(root, container, fqn);
     }
 
     private static String unavailableModelError(BmModelResolver.Resolution resolution,
@@ -2166,18 +2187,237 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         return project != null ? project.getVersion() : null;
     }
 
-    /**
-     * Deletes a FORM member (item / attribute / command / handler) addressed by a form FQN. A form
-     * ATTRIBUTE or column goes through EDT's form-attribute service, the designer's delete, which also
-     * removes the items bound to it. Any other member is removed directly with {@link EcoreUtil#remove}
-     * (a Group / Table cascades its contained subtree because {@code items} is containment), so a
-     * cross-reference to it (a button's command) is NOT rewritten; the caller
-     * should re-read the form afterwards. Two-phase like the mdclass path: {@code confirm=false}
-     * previews what would be removed (no write transaction), {@code confirm=true} removes it and
-     * force-exports the content form to {@code Form.form}.
-     */
+    /** Preflights the supported batch and authorizes its single form write through the existing gate. */
+    private String deleteFormBatch(Map<String, String> params)
+    {
+        MetadataDeleteBatch batch = MetadataDeleteBatch.parse(params);
+        if (!batch.errors.isEmpty())
+        {
+            return batch.refusal();
+        }
+        try
+        {
+            String projectName = JsonUtils.extractStringArgument(params, McpKeys.PROJECT_NAME);
+            ProjectContext ctx = resolveProjectAndScope(projectName, batch.operations.get(0).fqn);
+            if (ctx.hasError())
+            {
+                return unchangedBatchError(ctx.error);
+            }
+            FormElementWriter.FormEditContext fctx = FormElementWriter.resolveForEdit(ctx.project,
+                ctx.scope, batch.operations.get(0).ref.formPath,
+                "Form not found. Use get_metadata_details to find the form before previewing operations.");
+            Version version = platformVersionOf(ctx);
+            List<Map<String, Object>> preview = FormElementWriter.readEditableForm(fctx, "DeleteFormBatchPreflight",
+                (formModel, tx) -> formBatchPreflight(formModel, batch, version));
+            if (!batch.errors.isEmpty())
+            {
+                return batch.refusal();
+            }
+            if (!JsonUtils.extractBooleanArgument(params, "confirm", false))
+            {
+                WriteScope.recordNothingQueued();
+                return ToolResult.success().put(McpKeys.ACTION, VAL_PREVIEW).put("atomic", true)
+                    .put(KEY_ITEMS, preview).put("applied", Collections.emptyList()).put("committed", false)
+                    .put("rollbackPerformed", false).put("persistenceState", "unchanged")
+                    .put(McpKeys.MESSAGE, "Preview only. Confirm the same operations to delete all targets in one "
+                        + "model transaction. External references are not rewritten; re-check with get_metadata_details.")
+                    .toJson();
+            }
+            ConsentPreview consent = new ConsentPreview("Delete form members",
+                "Removes the listed members and their contained descendants from " + batch.operations.get(0).ref.formPath
+                    + ". External references are not rewritten.", preview.stream().mapToInt(item ->
+                        1 + ((List<?>)item.get("descendants")).size()).sum(),
+                batch.operations.stream().map(op -> op.fqn).toList());
+            String result = deleteWithConsent(consent, () -> performFormBatch(fctx, batch, version, preview));
+            JsonObject outcome = JsonParser.parseString(result).getAsJsonObject();
+            return ToolResult.isErrorPayload(result) && !outcome.has("applied")
+                && !outcome.has("mutationOutcomeUnknown") && !outcome.has("mutationCommitted")
+                    ? unchangedBatchError(result) : result;
+        }
+        catch (RuntimeException e)
+        {
+            String ready = FormValidationException.jsonOf(e);
+            if (ready != null)
+            {
+                return unchangedBatchError(ready);
+            }
+            Activator.logError("Error preparing form delete batch", e);
+            return unchangedBatchError(ToolResult.error("Cannot prepare operations: " + unwrapCauseMessage(e)
+                + ". Inspect the form with get_metadata_details before retrying.").toJson());
+        }
+    }
+
+    /** Resolves every target and its removal scope before any model mutation. */
+    static List<Map<String, Object>> formBatchPreflight(EObject formModel, MetadataDeleteBatch batch, Version version)
+    {
+        List<Map<String, Object>> items = new ArrayList<>();
+        List<EObject> targets = new ArrayList<>();
+        for (MetadataDeleteBatch.Operation op : batch.operations)
+        {
+            boolean handler = FormElementWriter.isHandlerToken(op.ref.kindToken);
+            EObject target = resolveFormTarget(formModel, op.ref, handler);
+            targets.add(target);
+            if (target == null)
+            {
+                batch.error(op.index, "invalidNow", JsonParser.parseString(formMemberNotFound(op.ref, handler,
+                    formTargetAdvice(formModel, op.ref, handler, op.fqn, version)))
+                    .getAsJsonObject().get("error").getAsString());
+                continue;
+            }
+            if (target instanceof AbstractFormAttribute)
+            {
+                batch.error(op.index, "unsupportedBatch", "Target '" + op.fqn
+                    + "' is an attribute/column. Use a separate delete_metadata call.");
+                continue;
+            }
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("operationIndex", op.index);
+            item.put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(op.fqn));
+            item.put("name", op.ref.name);
+            item.put("type", target.eClass().getName());
+            List<Map<String, Object>> descendants = new ArrayList<>();
+            boolean truncated = collectRemovedMembers(target, descendants);
+            if (truncated)
+            {
+                batch.error(op.index, "unsupportedBatch", "Removal scope of '" + op.fqn
+                    + "' exceeds the preview limit. Split this batch or delete the member separately.");
+            }
+            item.put("descendants", descendants);
+            items.add(item);
+        }
+        for (int i = 0; i < targets.size(); i++)
+        {
+            for (int j = i + 1; j < targets.size(); j++)
+            {
+                EObject left = targets.get(i);
+                EObject right = targets.get(j);
+                if (left != null && right != null && (left == right
+                    || EcoreUtil.isAncestor(left, right) || EcoreUtil.isAncestor(right, left)))
+                {
+                    batch.error(batch.operations.get(j).index, "dependsOnPriorOperation",
+                        "Targets overlap with operation " + batch.operations.get(i).index
+                            + ". Keep only the containing target (or remove the duplicate) and preview again.");
+                }
+            }
+        }
+        return items;
+    }
+
+    String performFormBatch(FormElementWriter.FormEditContext fctx, MetadataDeleteBatch batch, Version version,
+        List<Map<String, Object>> authorized)
+    {
+        try
+        {
+            boolean exported = FormElementWriter.writeEditableForm(fctx, "DeleteFormBatch", (formModel, tx) -> {
+                // Consent may have yielded to another editor. Recheck the whole scope before removing anything.
+                List<Map<String, Object>> current = formBatchPreflight(formModel, batch, version);
+                if (!batch.errors.isEmpty())
+                {
+                    throw new FormValidationException(batch.refusal());
+                }
+                if (!authorized.equals(current))
+                {
+                    throw new FormValidationException(unchangedBatchError(ToolResult.error(
+                        "Form changed since consent. Preview the complete operations again before confirming.")
+                        .put("reason", "batchScopeChanged").toJson()));
+                }
+                removeFormBatchTargets(formModel, batch);
+            });
+            return ToolResult.success().put(McpKeys.ACTION, VAL_EXECUTED).put("atomic", true)
+                .put(KEY_ITEMS, authorized).put("applied", batch.indexes()).put("committed", true)
+                .put("rollbackPerformed", false).put("exportSubmitted", exported)
+                .put("persistenceState", "exportPending")
+                .put("remainingState", "All listed targets and contained descendants removed. External references retained.")
+                .put("safeRetry", "Do not repeat applied operations. Read back the form and check its markers and disk export.")
+                .toJson();
+        }
+        catch (RuntimeException e)
+        {
+            String ready = FormValidationException.jsonOf(e);
+            if (ready != null)
+            {
+                return ready;
+            }
+            // A commit/export failure outside the task body is opaque. Never infer rollback from it.
+            Activator.logError("Error applying form delete batch", e);
+            String error = WriteScope.markCurrentErrorAfterRecordedWrite(ToolResult.errorWithUnknownMutationOutcome(
+                "Batch transaction/export failed: " + unwrapCauseMessage(e)
+                    + ". Do not blindly repeat operations; inspect the form and disk first.")
+                .put("possibleApplied", batch.indexes()).put("rollbackState", "unknown")
+                .put("persistenceState", "unknown").put("reason", "batchOutcomeUnknown")
+                .put("safeRetry", "Read back every target with get_metadata_details and inspect Form.form before retrying.")
+                .toJson());
+            JsonObject result = JsonParser.parseString(error).getAsJsonObject();
+            if (result.has("mutationCommitted"))
+            {
+                result.addProperty("committed", true);
+                result.addProperty("rollbackPerformed", false);
+                result.addProperty("rollbackState", "notPerformed");
+                result.add("applied", GsonProvider.get().toJsonTree(batch.indexes()));
+                result.remove("possibleApplied");
+            }
+            return GsonProvider.toJson(result);
+        }
+    }
+
+    /** Uses the same member writer as the single-item delete, inside the caller's one transaction. */
+    static void removeFormBatchTargets(EObject formModel, MetadataDeleteBatch batch)
+    {
+        for (MetadataDeleteBatch.Operation op : batch.operations)
+        {
+            try
+            {
+                EObject target = resolveFormTarget(formModel, op.ref, FormElementWriter.isHandlerToken(op.ref.kindToken));
+                FormElementWriter.removeFormMember(formModel, target);
+            }
+            catch (RuntimeException e)
+            {
+                throw new FormValidationException(ToolResult.error("Operation " + op.index + " ('" + op.fqn
+                    + "') failed: " + unwrapCauseMessage(e) + ". The model transaction was rolled back; preview again.")
+                    .put("reason", "batchOperationFailed").put("failedOperationIndex", op.index)
+                    .put("applied", Collections.emptyList()).put("committed", false).put("rollbackPerformed", true)
+                    .put("persistenceState", "unchanged").put("remainingState", "Project unchanged by this batch.")
+                    .put("safeRetry", "Correct the cause, preview the complete batch again, then confirm.").toJson());
+            }
+        }
+    }
+
+    static String unchangedBatchError(String error)
+    {
+        JsonObject result = JsonParser.parseString(error).getAsJsonObject();
+        result.add("applied", new JsonArray());
+        result.addProperty("committed", false);
+        result.addProperty("rollbackPerformed", false);
+        result.addProperty("persistenceState", "unchanged");
+        result.addProperty("remainingState", "Project unchanged by this request.");
+        result.addProperty("safeRetry", "Resolve the refusal, then preview the complete batch again.");
+        return GsonProvider.toJson(result);
+    }
+
+    private static String preserveBatchOutcome(Map<String, String> params, String result, String completed)
+    {
+        if (params.containsKey(MetadataDeleteBatch.OPERATIONS) && ToolResult.isErrorPayload(completed)
+            && !ToolResult.isErrorPayload(result))
+        {
+            JsonObject error = JsonParser.parseString(completed).getAsJsonObject();
+            JsonObject original = JsonParser.parseString(result).getAsJsonObject();
+            for (String key : List.of("atomic", "applied", "committed", "rollbackPerformed", "items", "remainingState",
+                "safeRetry", "exportSubmitted"))
+            {
+                if (original.has(key))
+                {
+                    error.add(key, original.get(key));
+                }
+            }
+            error.addProperty("persistenceState", "unconfirmed");
+            return GsonProvider.toJson(error);
+        }
+        return completed;
+    }
+
+    /** Deletes one form member; attributes/columns also use EDT's designer deletion service. */
     private String deleteFormMember(ProjectContext ctx, String normFqn,
-        FormElementWriter.FormMemberRef ref, boolean confirm)
+        FormElementWriter.FormMemberRef ref, boolean confirm, String expectedHash)
     {
         final boolean handler = FormElementWriter.isHandlerToken(ref.kindToken);
         try
@@ -2210,7 +2450,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             // to authorize a delete that cannot run.
             final FormAttributeDeleter attributeDeleter = attributeDeleterFor(data, normFqn);
             final List<String> authorizedScope = data.scope;
-            return gateFormMemberDelete(normFqn, ref, handler, data,
+            return gateFormMemberDelete(normFqn, ref, handler, data, expectedHash,
                 () -> performFormDelete(fctx, normFqn, ref, handler, version, attributeDeleter,
                     authorizedScope));
         }
@@ -2312,8 +2552,16 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      * @return the mutation's result, or the refusal error
      */
     String gateFormMemberDelete(String normFqn, FormElementWriter.FormMemberRef ref, boolean handler,
-        FormDeletePreview data, DeleteWrite write)
+        FormDeletePreview data, String expectedHash, DeleteWrite write)
     {
+        if (data.scope != null && expectedHash != null && !expectedHash.isBlank()
+            && !ContentHash.matches(data.scopeSignature(normFqn), expectedHash))
+        {
+            return ToolResult.error("The form changed since the preview: expectedHash for '" + normFqn //$NON-NLS-1$
+                + "' does not match its current deletion scope. Nothing was changed - run delete_metadata " //$NON-NLS-1$
+                + "with confirm=false again, then pass its new contentHash as expectedHash with confirm=true.") //$NON-NLS-1$
+                .toJson();
+        }
         // The breakdown is DERIVED from what the walk actually found, not a fixed phrase naming the
         // kinds the walk used to follow: the prompt named "nested items, attribute columns" while an
         // event handler and a command's action went along unmentioned (issue #295 review).
@@ -2362,13 +2610,12 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      * @param mdForm the resolved MD form
      * @return what the content holds; empty when it could not be read
      */
-    private static FormContentSummary readFormObjectContent(IProject project, MdObject mdForm)
+    private static FormContentSummary readFormObjectContent(FormElementWriter.FormEditContext fctx)
     {
         // Resolving the BM services is NOT best-effort: when they are unavailable the delete cannot
         // happen either, so that is a DETERMINISTIC refusal and it must reach the caller before the
         // consent gate. Swallowing it here asked the user to authorize a delete that would then fail
         // below the authorization point with the very error the prompt had hidden (issue #295 review).
-        FormElementWriter.FormEditContext fctx = FormElementWriter.editContextFor(project, mdForm);
         try
         {
             return FormElementWriter.readEditableForm(fctx, "DeleteFormContentPreview", //$NON-NLS-1$
@@ -2463,7 +2710,12 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         FormElementWriter.FormMemberRef ref, boolean handler, Version version)
     {
         FormDeletePreview data = readFormDeletePreview(fctx, ref, handler, normFqn, version);
+        return formDeletePreviewResult(normFqn, ref, handler, data);
+    }
 
+    static String formDeletePreviewResult(String normFqn, FormElementWriter.FormMemberRef ref,
+        boolean handler, FormDeletePreview data)
+    {
         if (!data.found)
         {
             return formMemberNotFound(ref, handler, data.kindAdvice);
@@ -2483,19 +2735,24 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         String consequences = data.attribute
             ? data.boundItemsSentence() + data.mainAttributeNote(false)
                 + " It is deleted through EDT's form-attribute service, as the form designer deletes it - " //$NON-NLS-1$
-                + "the confirmed response lists what was actually removed. Call confirm=true to apply." //$NON-NLS-1$
+                + "the confirmed response lists what was actually removed. Call confirm=true with expectedHash " //$NON-NLS-1$
+                + "set to this contentHash to apply only this scope." //$NON-NLS-1$
             : " Cross-references to it (a button's command) are NOT rewritten - " //$NON-NLS-1$
                 + "re-check with get_metadata_details afterwards. Call confirm=true " //$NON-NLS-1$
                 + "to apply."; //$NON-NLS-1$
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_PREVIEW)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put(KEY_REFACTORING_TITLE, "Delete form " + memberWord + " " + ref.name) //$NON-NLS-1$ //$NON-NLS-2$
             .put(KEY_ITEMS, removed)
             .put(KEY_BLOCKING, false);
+        if (data.scope != null)
+        {
+            result.put("contentHash", ContentHash.of(data.scopeSignature(normFqn))); //$NON-NLS-1$
+        }
         return putBlockingReferences(result, Collections.emptyList())
             .put(McpKeys.MESSAGE, "Preview: deleting '" + ref.name + "' (" + data.type + ") from " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                + ref.formPath + " would remove " //$NON-NLS-1$
+                + MetadataTypeUtils.toCanonicalEnglishFqn(ref.formPath) + " would remove " //$NON-NLS-1$
                 + (data.descendants.isEmpty()
                     ? "the " + memberWord + " itself." //$NON-NLS-1$ //$NON-NLS-2$
                     : "it and its " + data.descendants.size() + " contained member(s) (" //$NON-NLS-1$ //$NON-NLS-2$
@@ -2559,13 +2816,13 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         boolean handler, String type, AttributeDeleteOutcome outcome, boolean persisted)
     {
         String head = "Deleted form " + (handler ? KEY_HANDLER : KEY_MEMBER) + " '" + ref.name //$NON-NLS-1$ //$NON-NLS-2$
-            + "' (" + type + ") from " + ref.formPath //$NON-NLS-1$ //$NON-NLS-2$
+            + "' (" + type + ") from " + MetadataTypeUtils.toCanonicalEnglishFqn(ref.formPath) //$NON-NLS-1$ //$NON-NLS-2$
             + (persisted ? PERSISTED_CLAUSE
                 : " (in-memory only; on-disk write did not complete - re-check before relying on " //$NON-NLS-1$
                     + "it)."); //$NON-NLS-1$
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_EXECUTED)
-            .put("fqn", normFqn); //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)); //$NON-NLS-1$
         if (!persisted)
         {
             // The structured partial-result signal, not only the prose above.
@@ -3394,31 +3651,36 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         // Reuse create_metadata's owner + owned-form resolution so create/delete address the SAME object. The
         // resolver expects the 'forms' shape: Type.Object.forms.FormName (FormElementWriter owns it).
         String formPath = FormElementWriter.formPathOf(ref.ownerType, ref.ownerName, ref.formName);
-        MdObject mdForm = FormStructureReader.resolveMdForm(ctx.scope, formPath);
-        if (mdForm == null)
-        {
-            return formObjectNotFoundError(ctx.scope, ref);
-        }
-        if (!(mdForm instanceof IBmObject))
-        {
-            return ToolResult.error("Form is not a BM object").toJson(); //$NON-NLS-1$
-        }
+        OwnedFormTarget target = readPreparation(project, () -> {
+            MetadataScope current = preparationScope(ctx);
+            MdObject mdForm = FormStructureReader.resolveMdForm(current, formPath);
+            if (mdForm == null) return new OwnedFormTarget(null, null, null, null, null,
+                formObjectNotFoundError(current, ref));
+            if (!(mdForm instanceof IBmObject)) return new OwnedFormTarget(null, null, null, null, null,
+                ToolResult.error("Form is not a BM object").toJson());
+            EObject owner = mdForm.eContainer();
+            String ownerFqn = owner instanceof IBmObject ? ((IBmObject)owner).bmGetFqn() : ref.ownerFqn();
+            return new OwnedFormTarget(FormElementWriter.editContextFor(project, mdForm),
+                mdForm.eClass().getName(), ownerFqn, mdForm.getName(),
+                owner instanceof MdObject ? ((MdObject)owner).getName() : null, null);
+        });
+        if (target.error != null) return target.error;
 
         if (!confirm)
         {
             // The SAME content read the consent prompt uses, so the two phases cannot disagree: the
             // prompt counted the content and told the caller to run confirm=false for the details,
             // while this branch still answered with the BasicForm alone (issue #295 review).
-            FormContentSummary content = readFormObjectContent(project, mdForm);
+            FormContentSummary content = readFormObjectContent(target.context);
             List<Map<String, Object>> removed = new ArrayList<>();
-            removed.add(formItem(ref.formName, mdForm.eClass().getName()));
+            removed.add(formItem(ref.formName, target.kind));
             removed.addAll(content.elements);
             // blocking is hardcoded false: an owned form is removed by cascade (not through the
             // md-refactoring service), so unlike top-object previews NO incoming-reference scan
             // runs here — the message says so to keep the preview honest (deep scan is follow-up).
             ToolResult preview = ToolResult.success()
                 .put(McpKeys.ACTION, VAL_PREVIEW)
-                .put("fqn", normFqn) //$NON-NLS-1$
+                .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
                 .put(KEY_REFACTORING_TITLE, "Delete form " + ref.formName) //$NON-NLS-1$
                 .put(KEY_ITEMS, removed)
                 .put(KEY_BLOCKING, false);
@@ -3439,8 +3701,8 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         // writes can run without ALLOW - the guarantee is structural, not a matter of statement order
         // (issue #331 review). The form is resolved and its content is READ first, so the prompt names
         // what is really removed; this is the LAST check before the write, outside any transaction.
-        return gateFormObjectDelete(normFqn, readFormObjectContent(project, mdForm),
-            () -> performFormObjectDelete(project, normFqn, ref, mdForm));
+        return gateFormObjectDelete(normFqn, readFormObjectContent(target.context),
+            () -> performFormObjectDelete(project, normFqn, ref, target));
     }
 
 
@@ -3459,27 +3721,20 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      * @param mdForm the resolved MD form
      * @return the tool's JSON result
      */
+    private record OwnedFormTarget(FormElementWriter.FormEditContext context, String kind,
+        String ownerFqn, String formName, String ownerName, String error) { }
+
     private String performFormObjectDelete(IProject project, String normFqn,
-        FormElementWriter.FormObjectRef ref, MdObject mdForm)
+        FormElementWriter.FormObjectRef ref, OwnedFormTarget target)
     {
-        // The owner is a top object whose .mdo registers the form; force-export it after the removal so
-        // the <forms> entry (and any cleared default-form ref) lands on disk. eContainer() is the owner.
-        EObject ownerObj = mdForm.eContainer();
-        final String ownerFqn = (ownerObj instanceof IBmObject) ? ((IBmObject)ownerObj).bmGetFqn()
-            : ref.ownerFqn();
-        // Capture the RESOLVED names BEFORE the delete: the model lookup is case-INsensitive while the
-        // workspace folder path is case-sensitive, so the folder cleanup must address the names the
-        // model actually carries, not the user-typed FQN segments (which may differ in case).
-        String resolvedFormName = mdForm.getName();
-        final String formNameOnDisk =
-            (resolvedFormName == null || resolvedFormName.isEmpty()) ? ref.formName : resolvedFormName;
-        String resolvedOwnerName = (ownerObj instanceof MdObject) ? ((MdObject)ownerObj).getName() : null;
-        final String ownerNameOnDisk =
-            (resolvedOwnerName == null || resolvedOwnerName.isEmpty()) ? ref.ownerName : resolvedOwnerName;
+        final String ownerFqn = target.ownerFqn;
+        final String formNameOnDisk = target.formName == null || target.formName.isEmpty()
+            ? ref.formName : target.formName;
+        final String ownerNameOnDisk = target.ownerName == null || target.ownerName.isEmpty()
+            ? ref.ownerName : target.ownerName;
         try
         {
-            FormElementWriter.FormEditContext fctx = FormElementWriter.editContextFor(project, mdForm);
-            FormElementWriter.writeMdForm(fctx, "DeleteFormObject", //$NON-NLS-1$
+            FormElementWriter.writeMdForm(target.context, "DeleteFormObject", //$NON-NLS-1$
                 DeleteMetadataTool::removeFormObjectInTx);
         }
         catch (Exception e)
@@ -3520,7 +3775,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
 
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_EXECUTED)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put(McpKeys.MESSAGE, "Deleted form '" + ref.formName + "' from " + ref.ownerFqn() //$NON-NLS-1$ //$NON-NLS-2$
                 + (persisted ? " and persisted to disk." //$NON-NLS-1$
                     : " (in-memory only; on-disk write did not complete - re-check before relying on " //$NON-NLS-1$
@@ -3550,7 +3805,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         {
             return ToolResult.error("Owner object not found: " + ref.ownerFqn() + ". " //$NON-NLS-1$ //$NON-NLS-2$
                 + "Use get_metadata_objects to list available objects." //$NON-NLS-1$
-                + scope.addressingHint(ref.ownerFqn())).toJson();
+                + readPreparation(scope.project(), () -> scope.addressingHint(ref.ownerFqn()))).toJson();
         }
         return ToolResult.error("Form '" + ref.formName + "' not found on " + ref.ownerFqn() //$NON-NLS-1$ //$NON-NLS-2$
             + ". Use get_metadata_details to list the object's forms.").toJson(); //$NON-NLS-1$
@@ -3600,21 +3855,19 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             return ToolResult.error(ownerTypeErr).toJson();
         }
 
-        MetadataNodeResolver.ResolvedNode ownerResolved =
-            MetadataNodeResolver.resolveExistingWithYoFallback(ctx.scope, ref.ownerFqn());
-        if (ownerResolved.node == null)
-        {
-            return ToolResult.error("Owner object not found: " + ref.ownerFqn() + ". " //$NON-NLS-1$ //$NON-NLS-2$
-                + "Use get_metadata_objects to list available objects." //$NON-NLS-1$
-                + MetadataNodeResolver.yoNotFoundHint(ref.ownerFqn())).toJson();
-        }
-        MdObject owner = ownerResolved.node.object;
-        if (!(owner instanceof IBmObject))
-        {
-            return ToolResult.error("Owner object is not a BM object").toJson(); //$NON-NLS-1$
-        }
-
-        PredefinedWriter.DeletePreview preview = PredefinedWriter.preview(owner, ref.itemName);
+        PredefinedTarget target = readPreparation(ctx.project, () -> {
+            var resolved = MetadataNodeResolver.resolveExistingWithYoFallback(preparationScope(ctx), ref.ownerFqn());
+            if (resolved.node == null) return new PredefinedTarget(0, null,
+                ToolResult.error("Owner object not found: " + ref.ownerFqn() + ". "
+                    + "Use get_metadata_objects to list available objects."
+                    + MetadataNodeResolver.yoNotFoundHint(ref.ownerFqn())).toJson());
+            MdObject owner = resolved.node.object;
+            if (!(owner instanceof IBmObject bm)) return new PredefinedTarget(0, null,
+                ToolResult.error("Owner object is not a BM object").toJson());
+            return new PredefinedTarget(bm.bmGetId(), PredefinedWriter.preview(owner, ref.itemName), null);
+        });
+        if (target.error != null) return target.error;
+        PredefinedWriter.DeletePreview preview = target.preview;
         if (!preview.found)
         {
             return ToolResult.error("Predefined item not found: '" + ref.itemName + "' on " //$NON-NLS-1$ //$NON-NLS-2$
@@ -3632,7 +3885,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         // owner/item inside the transaction, or a per-item getBackReferences exception) - that is NOT
         // the same as "genuinely zero references" and must never be silently treated as safe. See
         // PredefinedRefScan#completed.
-        PredefinedRefScan refScan = collectPredefinedItemBlockingReferences(ctx.project, (IBmObject)owner, ref);
+        PredefinedRefScan refScan = collectPredefinedItemBlockingReferences(ctx.project, target.ownerId, ref);
 
         if (!confirm)
         {
@@ -3688,7 +3941,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             "Delete predefined item", //$NON-NLS-1$
             consentSubtitle.toString(), cascadeTotal, Collections.singletonList(normFqn));
         return deleteWithConsent(consentPreview,
-            () -> performPredefinedItemDelete(ctx.project, owner, normFqn, ref, refScan, force));
+            () -> performPredefinedItemDelete(ctx.project, target.ownerId, normFqn, ref, refScan, force));
     }
 
     /**
@@ -3748,7 +4001,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
 
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_PREVIEW)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put(KEY_REFACTORING_TITLE, "Delete predefined item " + ref.itemName) //$NON-NLS-1$
             .put(KEY_ITEMS, items)
             .put(KEY_BLOCKING, wouldBlock);
@@ -3762,7 +4015,9 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      * {@code refScan} / {@code force} are used only to compose the result message (the actual
      * block/force decision already ran in the caller before this is reached).
      */
-    private String performPredefinedItemDelete(IProject project, MdObject owner,
+    private record PredefinedTarget(long ownerId, PredefinedWriter.DeletePreview preview, String error) { }
+
+    private String performPredefinedItemDelete(IProject project, long ownerBmId,
         String normFqn, PredefinedWriter.PredefinedRef ref, PredefinedRefScan refScan,
         boolean force)
     {
@@ -3773,7 +4028,6 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         }
         IBmModel bmModel = modelResolution.getModel();
 
-        final long ownerBmId = ((IBmObject)owner).bmGetId();
         final String itemName = ref.itemName;
         // Force-export must target the owner's CANONICAL FQN (its own bmGetFqn()), never the
         // caller's spelling; and the cascade count in the result message is re-taken INSIDE the
@@ -3817,7 +4071,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
 
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_EXECUTED)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put("forced", force); //$NON-NLS-1$
         StringBuilder message =
             new StringBuilder("Deleted predefined item '" + itemName + "' from " + ref.ownerFqn()); //$NON-NLS-1$ //$NON-NLS-2$
@@ -3935,7 +4189,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      *     rows, the SAME shape {@link #describeProblem} builds for the generic-node delete path
      */
     private static PredefinedRefScan collectPredefinedItemBlockingReferences(IProject project,
-        IBmObject owner, PredefinedWriter.PredefinedRef ref)
+        long ownerBmId, PredefinedWriter.PredefinedRef ref)
     {
         try
         {
@@ -3945,7 +4199,6 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
                 return new PredefinedRefScan(Collections.emptyList(), false);
             }
             final IBmModel bmModel = modelResolution.getModel();
-            final long ownerBmId = owner.bmGetId();
             return BmTransactions.<PredefinedRefScan>read(bmModel, "PredefinedItemBackReferences", //$NON-NLS-1$
                 (tx, pm) ->
                 {
@@ -4275,7 +4528,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
      */
     static final class FolderRemoval
     {
-        private static final String FAMILY = "family"; //$NON-NLS-1$
+        private static final String KEY_FAMILY = "family"; //$NON-NLS-1$
         private static final String OWNER_FQN = "ownerFqn"; //$NON-NLS-1$
         private static final String FORM_NAME = "formName"; //$NON-NLS-1$
 
@@ -4294,7 +4547,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         JsonObject toJson()
         {
             JsonObject json = new JsonObject();
-            json.addProperty(FAMILY, family);
+            json.addProperty(KEY_FAMILY, family);
             json.addProperty(OWNER_FQN, ownerFqn);
             json.addProperty(FORM_NAME, formName);
             return json;
@@ -4308,7 +4561,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
                 return null;
             }
             JsonObject json = element.getAsJsonObject();
-            JsonElement family = json.get(FAMILY);
+            JsonElement family = json.get(KEY_FAMILY);
             JsonElement owner = json.get(OWNER_FQN);
             JsonElement name = json.get(FORM_NAME);
             if (family == null || !family.isJsonPrimitive() || name == null || !name.isJsonPrimitive()
@@ -4796,10 +5049,11 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     @Override
     protected String awaitDiskExport(Map<String, String> params, String result, WriteScope scope)
     {
-        return super.awaitDiskExport(params,
+        String completed = super.awaitDiskExport(params,
             reportFormFolderRemoval(JsonUtils.extractStringArgument(params, McpKeys.PROJECT_NAME), result,
                 formFolderCleanup),
             scope);
+        return preserveBatchOutcome(params, result, completed);
     }
 
     /**
@@ -4862,10 +5116,9 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
     private String deleteXdtoMember(ProjectContext ctx, String normFqn, XdtoWriter.MemberRef ref,
         boolean confirm)
     {
-        MetadataNodeResolver.MetadataNode pkgNode =
-            MetadataNodeResolver.resolveExistingWithYoFallback(ctx.scope, ref.packageFqn).node;
-        if (pkgNode == null || !(pkgNode.object instanceof XDTOPackage)
-            || !(pkgNode.object instanceof IBmObject))
+        MetadataNodeResolver.ObjectIdentity pkg = readPreparation(ctx.project,
+            () -> MetadataNodeResolver.resolveIdentity(preparationScope(ctx), ref.packageFqn));
+        if (pkg == null || !"XDTOPackage".equals(pkg.kind())) //$NON-NLS-1$
         {
             return ToolResult.error("XDTOPackage not found: " + ref.packageFqn //$NON-NLS-1$
                 + ". Use get_metadata_objects to find an FQN.").toJson(); //$NON-NLS-1$
@@ -4885,10 +5138,10 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
             return unavailableModelError(modelResolution, "Nothing was deleted."); //$NON-NLS-1$
         }
         IBmModel bmModel = modelResolution.getModel();
-        final long pkgBmId = ((IBmObject)pkgNode.object).bmGetId();
+        final long pkgBmId = pkg.bmId();
         // The RESOLVED package's canonical FQN: with the yo fallback the caller-typed spelling may
         // differ from the stored name, and force-export must target the stored top object.
-        final String pkgExportFqn = "XDTOPackage." + ((XDTOPackage)pkgNode.object).getName(); //$NON-NLS-1$
+        final String pkgExportFqn = pkg.fqn();
         return confirm
             ? performXdtoMemberDelete(ctx, normFqn, ref, bmModel, pkgBmId, fqnGenerator, pkgExportFqn)
             : buildXdtoMemberDeletePreview(normFqn, ref, bmModel, pkgBmId);
@@ -4963,7 +5216,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
 
         ToolResult result = ToolResult.success()
             .put(McpKeys.ACTION, VAL_PREVIEW)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put(KEY_REFACTORING_TITLE, "Delete XDTO member " + ref.memberName()) //$NON-NLS-1$
             .put(KEY_ITEMS, items)
             .put(KEY_BLOCKING, false);
@@ -5098,7 +5351,7 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
         boolean persisted = BmTransactions.forceExportToDisk(ctx.project, exportFqns);
         return ToolResult.success()
             .put(McpKeys.ACTION, VAL_EXECUTED)
-            .put("fqn", normFqn) //$NON-NLS-1$
+            .put("fqn", MetadataTypeUtils.toCanonicalEnglishFqn(normFqn)) //$NON-NLS-1$
             .put("forced", false) //$NON-NLS-1$
             .put(McpKeys.MESSAGE, "Deleted XDTO member '" + ref.memberName() + "' (" + result.kind //$NON-NLS-1$ //$NON-NLS-2$
                 + ") from " + ref.packageFqn //$NON-NLS-1$
@@ -5478,6 +5731,12 @@ public class DeleteMetadataTool extends AbstractMetadataWriteTool
          * {@code null} for any other member. The confirmed delete recomputes it and refuses a change.
          */
         List<String> scope;
+
+        /** Serializes the full scope with the canonical address returned by the preview. */
+        String scopeSignature(String normFqn)
+        {
+            return GsonProvider.toJson(List.of(MetadataTypeUtils.toCanonicalEnglishFqn(normFqn), scope));
+        }
 
         /** Counts a removed member and lists it while the list has room. */
         void addRemoved(EObject member, boolean contained)

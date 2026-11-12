@@ -144,12 +144,10 @@ public class CompareConfigurationsTool implements IMcpTool
      * given up on.
      * <p>
      * A separate budget from {@link #MAX_UNREADABLE_TICKS}, and much longer, because it counts a
-     * different thing. {@code startComparison} SCHEDULES the launch: until Eclipse runs it, EDT
-     * lists no handle and answers no status, and those readings are indistinguishable from an
-     * unreadable comparison unless the session's own "EDT has listed this at least once" latch is
-     * consulted. Spending the three-second unreadable budget on them meant that a scheduler busy
-     * with a build or an index for a few seconds got a correctly queued comparison CANCELLED, and
-     * the caller told it could not be read. At {@link #POLL_INTERVAL_MS} this is one minute -
+     * different thing. EDT registers the handle before scheduling the process job, and the
+     * first non-null status is published only inside that job. Handle visibility alone cannot
+     * distinguish a queued launch from a process whose status was lost: the session records
+     * the first actual status separately. At {@link #POLL_INTERVAL_MS} this is one minute -
      * long enough for a loaded workbench to get to the job, short enough that a launch the
      * platform silently dropped is not waited out for the whole two-hour job budget.
      */
@@ -1087,8 +1085,8 @@ public class CompareConfigurationsTool implements IMcpTool
             }
             if (startingTicks >= MAX_STARTING_TICKS)
             {
-                // EDT accepted the batch and then never listed the handle. Named as itself: this
-                // is not an unreadable comparison, it is one the platform never began, so the
+                // EDT accepted the batch but never reported its first process status. This is
+                // not an unreadable comparison, it is one the platform never began, so the
                 // remedy is different too.
                 return Conclusion.of(Conclusion.Kind.NEVER_STARTED, state.getDetail());
             }
@@ -2786,6 +2784,10 @@ public class CompareConfigurationsTool implements IMcpTool
             // reached and a poll that read only the status would call it "running" forever.
             ComparisonEngine.Progress progress = engine.get().progress(batch, handle);
             ComparisonProcessStatus reported = progress.status();
+            if (reported != null)
+            {
+                session.noteStatusObserved();
+            }
             switch (progress.phase())
             {
                 case FAILED:
@@ -2795,17 +2797,15 @@ public class CompareConfigurationsTool implements IMcpTool
                 case FINISHED:
                     return Progress.finished(reported.name());
                 case UNKNOWN:
-                    // EDT reported NO status this tick - the read threw, the service could not be
-                    // asked, or its manager answers nothing because it no longer holds the
-                    // handle's session. An absence is not a status: it is neither quoted as one
-                    // nor treated as a verdict here, since a single unreadable tick is no
-                    // evidence that a live comparison has died. The loop above decides how many
-                    // CONSECUTIVE ones it will tolerate - unless the launch has not surfaced at
-                    // all, which is a different thing on a different budget.
-                    return session.seenAliveByEdt()
-                        ? Progress.unknown(unreadableStatusText(progress))
-                        : Progress.starting("EDT has accepted the comparison and has not " //$NON-NLS-1$
-                            + "listed it yet, so it answers no status for it"); //$NON-NLS-1$
+                    // A listed handle is registered before EDT schedules its process job.
+                    // Only an actual status proves that job reached initialization. A null
+                    // answer before that uses the startup budget; a lost status afterwards,
+                    // an unavailable service or a failed read uses the unreadable budget.
+                    return progress.statusWasAsked() && progress.statusReadFailure() == null
+                        && !session.hasObservedStatus()
+                        ? Progress.starting("EDT has accepted the comparison and has not " //$NON-NLS-1$
+                            + "reported its first process status yet") //$NON-NLS-1$
+                        : Progress.unknown(unreadableStatusText(progress));
                 case UNEXPECTED:
                     // Every remaining literal of the platform enum belongs to merging, which
                     // cannot happen here. Reported as a failure with the raw literal rather than

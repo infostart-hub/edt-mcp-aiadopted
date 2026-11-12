@@ -84,6 +84,32 @@ import com.google.gson.JsonParser;
 public class CreateMetadataToolTest
 {
     @Test
+    public void testGenerateContentOnNonFormIsRefusedBeforeProjectResolution()
+    {
+        for (String fqn : Arrays.asList("Catalog.NewCatalog", "CommonForm.NewForm",
+            "Catalog.Catalog.Form.ItemForm.Table.List"))
+        {
+            Map<String, String> params = new HashMap<>();
+            params.put("projectName", "Unused");
+            params.put("fqn", fqn);
+            params.put("generateContent", "true");
+            JsonObject result = JsonParser.parseString(new CreateMetadataTool().executeOnUiThread(params))
+                .getAsJsonObject();
+            assertFalse(result.get("success").getAsBoolean());
+            assertTrue(result.get("error").getAsString().contains(fqn));
+            assertTrue(result.get("error").getAsString().contains("Omit these options"));
+        }
+    }
+
+    @Test
+    public void testFormPurposeIsDeclaredInSchema()
+    {
+        JsonObject schema = JsonParser.parseString(new CreateMetadataTool().getInputSchema()).getAsJsonObject();
+        assertTrue(schema.getAsJsonObject("properties").has("formType"));
+        assertTrue(schema.toString().contains("RECORD_SET"));
+    }
+
+    @Test
     public void testNameConstant()
     {
         assertEquals("create_metadata", new CreateMetadataTool().getName()); //$NON-NLS-1$
@@ -745,6 +771,68 @@ public class CreateMetadataToolTest
     // Boolean for a chart of accounts' accounting flags. Driven through the seam the write
     // transaction calls (createMemberChild), on bare MdClassFactory owners and a mocked factory and
     // type provider - the same headless split MetadataTypeBuilderTest uses.
+
+    @Test
+    public void testCreateAttributeWithRequestedTypeInOneOperation() throws Exception
+    {
+        CreateMetadataTool.Props props = new CreateMetadataTool.Props();
+        java.lang.reflect.Method parse = CreateMetadataTool.class.getDeclaredMethod("parseProperties",
+            List.class, CreateMetadataTool.Props.class,
+            com.ditrix.edt.mcp.server.utils.MdNameNormalizer.Report.class);
+        parse.setAccessible(true);
+        JsonObject property = new com.google.gson.JsonParser().parse(
+            "{\"name\":\"type\",\"value\":{\"types\":[{\"kind\":\"String\",\"length\":300}]}}")
+            .getAsJsonObject();
+        Object error = parse.invoke(new CreateMetadataTool(), List.of(property), props,
+            new com.ditrix.edt.mcp.server.utils.MdNameNormalizer.Report(true));
+        assertNull("A new attribute must accept its initial type without a second destructive write", error);
+        Platform platform = new Platform();
+        com._1c.g5.v8.dt.metadata.mdclass.Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+        MdObject created = createMember(catalog, "attributes", mock(IModelObjectFactory.class),
+            platform.provider, props, null);
+        assertEquals(300, typeOf(created).getStringQualifiers().getLength());
+        assertEquals(1, catalog.getAttributes().size());
+        assertSame(created, catalog.getAttributes().get(0));
+    }
+
+    @Test
+    public void testInvalidInitialTypeDoesNotAttachAMember()
+    {
+        CreateMetadataTool.Props props = new CreateMetadataTool.Props();
+        props.initialType = com.google.gson.JsonParser.parseString(
+            "{\"types\":[{\"kind\":\"Ref\",\"ref\":\"Catalog.Missing\"}]}").getAsJsonObject();
+        com._1c.g5.v8.dt.metadata.mdclass.Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+        IModelObjectFactory factory = mock(IModelObjectFactory.class);
+        try
+        {
+            createMember(catalog, "attributes", factory, new Platform().provider, props, null);
+            org.junit.Assert.fail("An unresolved initial reference must refuse creation");
+        }
+        catch (IllegalArgumentException | IllegalStateException expected)
+        {
+            assertTrue(catalog.getAttributes().isEmpty());
+            org.mockito.Mockito.verifyZeroInteractions(factory);
+        }
+    }
+
+    @Test
+    public void testInitialTypeOnAnUntypedMemberIsNotIgnored()
+    {
+        CreateMetadataTool.Props props = new CreateMetadataTool.Props();
+        props.initialType = com.google.gson.JsonParser.parseString(
+            "{\"types\":[{\"kind\":\"String\",\"length\":300}]}").getAsJsonObject();
+        com._1c.g5.v8.dt.metadata.mdclass.Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+        try
+        {
+            createMember(catalog, "commands", mock(IModelObjectFactory.class), new Platform().provider, props, null);
+            org.junit.Assert.fail("A command cannot carry a metadata value type");
+        }
+        catch (IllegalArgumentException expected)
+        {
+            assertTrue(expected.getMessage().contains("typed metadata member"));
+            assertTrue(catalog.getCommands().isEmpty());
+        }
+    }
 
     /** The member name every typed-member test creates. */
     private static final String MEMBER = "Member"; //$NON-NLS-1$

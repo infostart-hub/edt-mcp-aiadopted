@@ -603,6 +603,18 @@ public class ImportProjectFromFileToolTest
         assertTrue(result, result.contains("do not import it again")); //$NON-NLS-1$
     }
 
+    @Test
+    public void testAStartedContextWithPendingModelIsReportedAsStarting() throws IOException
+    {
+        lifecycle.modelReady = false;
+        ImportProjectFromFileTool tool = new ImportProjectFromFileTool(jobs, this::provide, importer,
+            lifecycle, 500, ImportProjectFromFileTool.CONVERSION_BUDGET_MS, null);
+        String result = tool.execute(params(tempFile(".cf").toString(), uniqueName(), FULL_WAIT)); //$NON-NLS-1$
+        assertTrue(result, result.contains("| State | starting |")); //$NON-NLS-1$
+        assertFalse(result, result.contains("| State | ready |")); //$NON-NLS-1$
+        assertEquals("one owner must issue exactly one start", 1, lifecycle.startRequests); //$NON-NLS-1$
+    }
+
     // ==================== Helpers ====================
 
     private ImportProjectFromFileTool tool()
@@ -870,6 +882,7 @@ public class ImportProjectFromFileToolTest
         volatile boolean started;
         volatile boolean startFails;
         volatile boolean neverStarts;
+        volatile boolean modelReady = true;
         volatile boolean projectMissing;
         volatile int startRequests;
         volatile int permits;
@@ -914,6 +927,12 @@ public class ImportProjectFromFileToolTest
         public boolean hasDtProject(IProject project)
         {
             return started;
+        }
+
+        @Override
+        public boolean isModelReady(IProject project)
+        {
+            return modelReady;
         }
     }
 }
