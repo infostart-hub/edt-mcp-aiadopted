@@ -1,122 +1,57 @@
-# Установка и сборка EDT MCP Server Plugin
+# Сборка и установка EDT MCP Server Plugin из исходников
 
-## Быстрая установка в 1С:EDT (без сборки из исходников)
+Штатный режим работы с репозиторием — **локальная сборка из живых исходников через `mise`**, чтобы разработчик и его ИИ-исполнитель могли в любой момент доработать плагин под свои задачи, пересобрать и сразу обновить его в своей **1С:EDT**.
 
-1. **Если 1С:EDT ещё не установлена** — скачайте официальный бесплатный установщик **1C:EDT Start** фирмы «1С»:
-   - Официальный сайт: https://edt.1c.ru/
-   - Портал релизов 1С: https://releases.1c.ru/project/DevelopmentTools10 (*Технологические дистрибутивы → 1C:Enterprise Development Tools*, доступ бесплатный по обычной учётной записи `portal.1c.ru`; комьюнити-лицензия разработчика при необходимости оформляется на https://developer.1c.ru/).
-   - Через **1C:EDT Start** установите поддерживаемую версию **1С:EDT `2025.2`, `2026.1` или `2026.2`** (комплектная Java с JavaFX ставится автоматически).
-2. **Установка готового релиза плагина**:
-   - Автоматически (при использовании головного плагина [`vanessa-ai-pipeline`](https://github.com/infostart-hub/vanessa-ai-pipeline) и закрытом окне 1С:EDT):
+## 0. Где взять официальный установщик 1С:EDT (если среда ещё не установлена)
+
+- Официальный сайт: https://edt.1c.ru/
+- Портал релизов 1С: https://releases.1c.ru/project/DevelopmentTools10 (*Технологические дистрибутивы → 1C:Enterprise Development Tools*, дистрибутив **бесплатный** по обычной учётной записи `portal.1c.ru`, платный договор ИТС для скачивания EDT не требуется; бесплатная комьюнити-лицензия разработчика при необходимости оформляется на https://developer.1c.ru/).
+- Установите **1C:EDT Start** и через него поставьте поддерживаемую версию **1С:EDT `2025.2`, `2026.1` или `2026.2`** (комплектная Java с JavaFX ставится автоматически).
+
+---
+
+## 1. Штатная локальная сборка и установка через `mise` (Windows / macOS / Linux)
+
+В [`mise.toml`](mise.toml) уже зафиксированы нужные версии **JDK 25** и **Maven 3.9.16** — отдельно ставить Java, Maven или `make` не нужно:
+
+1. Установите [`mise`](https://mise.jdx.dev), если его ещё нет:
+   - **Windows**: `winget install jdx.mise`
+   - **macOS**: `brew install mise`
+   - **Linux**: `curl -fsSL https://mise.run | sh`
+2. Соберите p2-репозиторий из исходников:
+   ```sh
+   mise trust
+   mise install
+   mise run build
+   ```
+3. Готовый локальный p2-репозиторий появится в:
+   ```text
+   mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository
+   ```
+4. Установите собранный плагин в **1С:EDT**:
+   - **Автоматически** (из корня головного репозитория [`vanessa-ai-pipeline`](https://github.com/infostart-hub/vanessa-ai-pipeline) при закрытом окне 1С:EDT — команда сама выполнит сборку `./edt-mcp` при изменениях и установит её через `p2.director`):
      ```sh
      node .agents/plugins/1c-ai-pipeline/bin/pipeline-deploy.cjs deploy-edt
      ```
-   - Вручную через интерфейс 1С:EDT: скачайте архив `MCP-EDT.v*.zip` со страницы [GitHub Releases](https://github.com/infostart-hub/edt-mcp-aiadopted/releases), затем в 1С:EDT откройте **Справка (Help) → Установить новое ПО (Install New Software) → Добавить (Add) → Архив (Archive...)** и выберите скачанный `.zip`.
+   - **Вручную в интерфейсе 1С:EDT**: **Справка (Help) → Установить новое ПО (Install New Software) → Добавить (Add) → Локальный (Local)** → выбрать папку `target/repository`.
+
+### Полезные команды `mise` и `make` для разработки форка
+
+| Команда `mise` | Эквивалент `make` | Описание |
+|---|---|---|
+| `mise run setup` | `make setup` | Установка закреплённых JDK 25 и Maven 3.9.16 |
+| `mise run build` | `make build` | Быстрая сборка p2-репозитория без прогона тестов |
+| `mise run test` | `make test` | Прогон тестов плагина |
+| `mise run check` | `make verify` | Полная проверка (`lint:python` + `mvn verify`) |
 
 ---
 
-## Сборка из исходников (для контрибьюторов)
+## 2. Крайний резервный способ (только если на ПК заблокирована сборка Maven)
 
-### Windows
+Используйте этот вариант **только в крайнем случае**, когда корпоративный прокси/файрвол полностью блокирует скачивание зависимостей Maven или на машине недостаточно памяти для локальной сборки (при установке из готового архива локальные правки исходников в `./edt-mcp` применяться не будут):
 
-### 1. Установить зависимости
-
-Открыть PowerShell от администратора:
-
-```powershell
-winget install --id=Git.Git -e
-winget install --id=jdx.mise -e
-winget install --id=GnuWin32.Make -e
-```
-
-Закрыть и открыть новый терминал, чтобы PATH обновился.
-
-Добавить `make` в PATH, если не добавился автоматически:
-
-```powershell
-# Проверить
-make --version
-
-# Если не найден — добавить вручную
-[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files (x86)\GnuWin32\bin", "User")
-```
-
-### 2. Активировать mise
-
-```powershell
-mise activate pwsh | Invoke-Expression
-```
-
-Для автоматической активации при каждом запуске PowerShell:
-
-```powershell
-Add-Content -Path $PROFILE -Value 'mise activate pwsh | Invoke-Expression'
-```
-
-### 3. Собрать
-
-```powershell
-cd EDT-MCP
-make setup
-make build
-```
-
----
-
-## macOS / Linux
-
-### 1. Установить mise
-
-```bash
-# macOS
-brew install mise
-
-# Linux
-curl https://mise.jdx.dev/install.sh | sh
-```
-
-Активировать (добавить в `.zshrc` / `.bashrc`):
-
-```bash
-eval "$(mise activate zsh)"   # или bash
-```
-
-### 2. Установить make и git (если нет)
-
-```bash
-# macOS — уже есть из Xcode CLT
-xcode-select --install
-
-# Linux (Debian/Ubuntu)
-sudo apt install build-essential git
-```
-
-### 3. Собрать
-
-```bash
-cd EDT-MCP
-make setup
-make build
-```
-
----
-
-## Что делают команды
-
-| Команда | Описание |
-|---|---|
-| `make setup` | Устанавливает Java и Maven через mise (идемпотентно) |
-| `make build` | Сборка плагина (без тестов) |
-| `make build-all` | Сборка с тестами |
-| `make clean` | Очистка артефактов |
-| `make test` | Только тесты |
-
-## Результат сборки
-
-После `make build` p2-репозиторий для установки в EDT находится в:
-
-```
-mcp/repositories/com.ditrix.edt.mcp.server.repository/target/
-```
-
-Установка в EDT: **Help → Install New Software → Add → Local** → указать путь к папке `repository`.
+- Через оркестратор с явным флагом `--from-release`:
+  ```sh
+  node .agents/plugins/1c-ai-pipeline/bin/pipeline-deploy.cjs deploy-edt --from-release
+  ```
+- Либо скачайте `MCP-EDT.v*.zip` из раздела [GitHub Releases](https://github.com/infostart-hub/edt-mcp-aiadopted/releases) и укажите его через **Help → Install New Software → Add → Archive...**.
