@@ -49,6 +49,8 @@ jobs:
       - name: Create index.html
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
           cat > _site/index.html <<EOF
           <!DOCTYPE html>
           <html>
@@ -57,8 +59,8 @@ jobs:
             <h1>EDT MCP Server Update Site</h1>
             <p>Current version: <strong>${VERSION}</strong></p>
             <p>Use this URL in EDT: <strong>Help → Install New Software...</strong></p>
-            <pre>https://ditrixnew.github.io/EDT-MCP/</pre>
-            <p><a href="https://github.com/DitriXNew/EDT-MCP">GitHub Repository</a></p>
+            <pre>https://${OWNER_LC}.github.io/${REPO_NAME}/</pre>
+            <p><a href="https://github.com/${{ github.repository }}">GitHub Repository</a></p>
           </body>
           </html>
           EOF

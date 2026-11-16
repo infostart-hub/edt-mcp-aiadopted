@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build and publish (e.g. v1.1.0)'
+        required: true
+        default: 'v1.1.0'
 
 jobs:
   release:
@@ -14,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       # The MCP plugin is BUILT on 25: Tycho 5 needs Maven on JDK 21+, and tycho-surefire runs
       # the EDT 2026.2 platform bundles, which are Java 25. The bundle itself still compiles to
@@ -50,8 +58,9 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          # tag: v1.26.0 → 1.26.0
-          VERSION="${GITHUB_REF_NAME#v}"
+          RAW_TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set version from tag
@@ -79,16 +88,20 @@ jobs:
           mvn -f proxy/pom.xml clean verify --batch-mode --no-transfer-progress
           cp proxy/target/edt-mcp-proxy-*.jar "edt-mcp-proxy-v${{ steps.version.outputs.version }}.jar"
 
-      - name: Package archive
+      - name: Package archive and checksums
         run: |
           cd mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository
           zip -r "$GITHUB_WORKSPACE/MCP-EDT.v${{ steps.version.outputs.version }}.zip" .
+          cd "$GITHUB_WORKSPACE"
+          sha256sum MCP-EDT.v*.zip edt-mcp-proxy-v*.jar > SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           name: MCP-EDT v${{ steps.version.outputs.version }}
           files: |
             MCP-EDT.v*.zip
             edt-mcp-proxy-v*.jar
+            SHA256SUMS.txt
           generate_release_notes: true
