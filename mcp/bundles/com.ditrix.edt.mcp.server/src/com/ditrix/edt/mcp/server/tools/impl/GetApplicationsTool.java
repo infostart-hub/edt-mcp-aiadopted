@@ -414,6 +414,9 @@ public class GetApplicationsTool implements IMcpTool
             app.getRequiredVersion().ifPresent(version ->
                 appObj.addProperty("requiredVersion", version)); //$NON-NLS-1$
 
+            // Enrich standalone-server (wst-server) applications with webUrl / port / infobaseFile
+            com.ditrix.edt.mcp.server.utils.StandaloneServerSupport.enrichApplicationJson(app, appObj);
+
             appsArray.add(appObj);
         }
         return appsArray;

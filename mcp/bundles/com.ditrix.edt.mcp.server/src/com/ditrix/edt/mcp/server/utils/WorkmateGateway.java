@@ -2923,6 +2923,92 @@ public class WorkmateGateway
         return value != null ? value.toString() : null;
     }
 
+    /**
+     * Non-throwing runtime diagnostic snapshot of 1C:Workmate installation, activation,
+     * token presence, and bridge readiness inside the current EDT JVM.
+     * <p>
+     * SECURITY: never reads or emits the client token string — only {@code hasClientToken()}
+     * boolean via Workmate's public {@code ISettings} interface.
+     *
+     * @param bridgeSessionPublished whether {@link WorkmateChatSessionPublisher} published the JShell bridge session
+     * @return ordered diagnostic map suitable for {@code get_server_status}
+     */
+    public static java.util.Map<String, Object> inspectRuntimeStatus(boolean bridgeSessionPublished)
+    {
+        java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+        info.put("installed", Boolean.FALSE); //$NON-NLS-1$
+        info.put("enabled", Boolean.FALSE); //$NON-NLS-1$
+        info.put("tokenConfigured", Boolean.FALSE); //$NON-NLS-1$
+        info.put("bridgeSessionReady", Boolean.valueOf(bridgeSessionPublished)); //$NON-NLS-1$
+        info.put("status", "not_installed"); //$NON-NLS-1$
+        info.put("activationUrl", "https://code.1c.ai/"); //$NON-NLS-1$
+
+        try
+        {
+            Bundle aiBundle = requireBundle(AI_BUNDLE);
+            info.put("installed", Boolean.TRUE); //$NON-NLS-1$
+            info.put("version", aiBundle.getVersion().toString()); //$NON-NLS-1$
+            info.put("bundleState", bundleStateName(aiBundle.getState())); //$NON-NLS-1$
+
+            Bundle uiCommonBundle = requireBundle(UI_COMMON_BUNDLE);
+            requireBundle(UI_BUNDLE);
+
+            Object injector = resolveInjector(uiCommonBundle);
+            Class<?> injectorClass = requireClass(uiCommonBundle, GUICE_INJECTOR);
+            Method getInstance = requireMethod(injectorClass, "getInstance", Class.class); //$NON-NLS-1$
+            Class<?> settingsClass = requireClass(aiBundle, SETTINGS);
+            Object settings = invoke(getInstance, injector, settingsClass);
+            if (settings == null)
+            {
+                info.put("status", "not_ready"); //$NON-NLS-1$
+                return info;
+            }
+            boolean enabled = readBoolean(settingsClass, settings, "isEnabled"); //$NON-NLS-1$
+            boolean hasToken = readBoolean(settingsClass, settings, "hasClientToken"); //$NON-NLS-1$
+            info.put("enabled", Boolean.valueOf(enabled)); //$NON-NLS-1$
+            info.put("tokenConfigured", Boolean.valueOf(hasToken)); //$NON-NLS-1$
+            if (!enabled)
+            {
+                info.put("status", "disabled"); //$NON-NLS-1$
+            }
+            else if (!hasToken)
+            {
+                info.put("status", "no_client_token"); //$NON-NLS-1$
+            }
+            else
+            {
+                info.put("status", "ready"); //$NON-NLS-1$
+            }
+        }
+        catch (GatewayException e)
+        {
+            switch (e.getKind())
+            {
+                case NOT_INSTALLED:
+                    info.put("status", "not_installed"); //$NON-NLS-1$
+                    break;
+                case NOT_READY:
+                    info.put("status", "not_ready"); //$NON-NLS-1$
+                    break;
+                case DISABLED:
+                    info.put("status", "disabled"); //$NON-NLS-1$
+                    break;
+                case NO_CLIENT_TOKEN:
+                    info.put("enabled", Boolean.TRUE); //$NON-NLS-1$
+                    info.put("status", "no_client_token"); //$NON-NLS-1$
+                    break;
+                default:
+                    info.put("status", "incompatible"); //$NON-NLS-1$
+                    break;
+            }
+        }
+        catch (RuntimeException | LinkageError e) // NOSONAR diagnostics must never break get_server_status
+        {
+            info.put("status", "not_ready"); //$NON-NLS-1$
+        }
+        return info;
+    }
+
     private static Integer integerValue(Object value) throws GatewayException
     {
         if (value instanceof Number)

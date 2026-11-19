@@ -125,6 +125,10 @@ public class GetServerStatusTool implements IMcpTool
                 "atStartup is the mode when this plugin activated; requested is the current " //$NON-NLS-1$
                     + "system property. EDT binds these modes at class initialization; changing them " //$NON-NLS-1$
                     + "requires an EDT restart") //$NON-NLS-1$
+            .objectProperty("workmate", //$NON-NLS-1$
+                "1C:Workmate (1С:Напарник) co-located plugin status: installed, enabled, " //$NON-NLS-1$
+                    + "tokenConfigured (boolean only, never the token), bridgeSessionReady, " //$NON-NLS-1$
+                    + "askWorkmateToolEnabled, status, and activationUrl") //$NON-NLS-1$
             .build();
     }
 
@@ -199,6 +203,13 @@ public class GetServerStatusTool implements IMcpTool
                 createRenderFlagState(NativeRenderModeProbe.getStartupBufferedRenderMode(),
                     System.getProperty(FLAG_BUFFERED_LAYOUT_RENDER)));
             result.put("formRenderFlags", formRenderFlags); //$NON-NLS-1$
+
+            Map<String, Object> workmate = com.ditrix.edt.mcp.server.utils.WorkmateGateway
+                .inspectRuntimeStatus(activator != null && activator.isWorkmateBridgePublished());
+            boolean askWorkmateEnabled = registry.getEnabledTools().stream()
+                .anyMatch(t -> AskWorkmateTool.NAME.equals(t.getName()));
+            workmate.put("askWorkmateToolEnabled", Boolean.valueOf(askWorkmateEnabled)); //$NON-NLS-1$
+            result.put("workmate", workmate); //$NON-NLS-1$
 
             return result.toJson();
         }

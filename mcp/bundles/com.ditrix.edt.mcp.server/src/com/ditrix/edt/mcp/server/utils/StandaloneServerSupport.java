@@ -1016,6 +1016,103 @@ public final class StandaloneServerSupport
         }
     }
 
+    /**
+     * Best-effort enriches a {@code get_applications} JSON entry for a standalone-server
+     * ({@code com.e1c.g5.dt.applications.type.wst-server}) application with its {@code applicationKind},
+     * {@code webUrl}, {@code port}, {@code wsConnectionString}, and {@code infobaseFile}.
+     * Never throws and leaves non-standalone applications untouched.
+     */
+    public static void enrichApplicationJson(IApplication app, com.google.gson.JsonObject appObj)
+    {
+        if (app == null || appObj == null || app.getType() == null
+            || !WST_SERVER_APP_TYPE.equals(app.getType().getId()))
+        {
+            return;
+        }
+        appObj.addProperty("applicationKind", "standaloneServer"); //$NON-NLS-1$ //$NON-NLS-2$
+        try
+        {
+            Object module = moduleOfApplication(app);
+            if (module == null)
+            {
+                return;
+            }
+            String ibFile = infobaseDirectoryOf(module);
+            if (ibFile != null && !ibFile.isEmpty())
+            {
+                appObj.addProperty("infobaseFile", ibFile); //$NON-NLS-1$
+            }
+            Object service = acquireService("get_applications", null); //$NON-NLS-1$
+            if (service != null)
+            {
+                Bundle bundle = Platform.getBundle(WST_CORE_BUNDLE_ID);
+                if (bundle != null)
+                {
+                    Class<?> ssInfobaseClass = bundle.loadClass(
+                        "com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase"); //$NON-NLS-1$
+                    Method getUrl = service.getClass().getMethod("getInfobaseUrl", ssInfobaseClass); //$NON-NLS-1$
+                    Object urlObj = getUrl.invoke(service, module);
+                    if (urlObj instanceof java.net.URI uri)
+                    {
+                        String webUrl = uri.toString();
+                        appObj.addProperty("webUrl", webUrl); //$NON-NLS-1$
+                        appObj.addProperty("wsConnectionString", "/WS\"" + webUrl + "\""); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        if (uri.getPort() > 0)
+                        {
+                            appObj.addProperty("port", Integer.valueOf(uri.getPort())); //$NON-NLS-1$
+                        }
+                    }
+                }
+            }
+        }
+        catch (Throwable t) // NOSONAR best-effort enrichment must never break get_applications
+        {
+            // Keep basic application metadata intact
+        }
+    }
+
+    private static String infobaseDirectoryOf(Object module)
+    {
+        try
+        {
+            Method getCfg = findMethod(module.getClass(), "getStandaloneServerConfiguration", 0); //$NON-NLS-1$
+            if (getCfg == null)
+            {
+                return null;
+            }
+            Object cfg = getCfg.invoke(module);
+            if (cfg == null)
+            {
+                return null;
+            }
+            Method getDb = findMethod(cfg.getClass(), "getDatabase", 0); //$NON-NLS-1$
+            if (getDb == null)
+            {
+                return null;
+            }
+            Object db = getDb.invoke(cfg);
+            if (db == null)
+            {
+                return null;
+            }
+            Method getDir = findMethod(db.getClass(), "getConfigDirectory", 0); //$NON-NLS-1$
+            if (getDir == null)
+            {
+                getDir = findMethod(db.getClass(), "getPath", 0); //$NON-NLS-1$
+            }
+            if (getDir == null)
+            {
+                return null;
+            }
+            Object val = getDir.invoke(db);
+            return val != null ? val.toString() : null;
+        }
+        catch (Throwable t) // NOSONAR reflective best-effort read
+        {
+            return null;
+        }
+    }
+
     /** First public method on {@code cls} (incl. inherited) with the given name and parameter count. */
     public static Method findMethod(Class<?> cls, String name, int paramCount)
     {

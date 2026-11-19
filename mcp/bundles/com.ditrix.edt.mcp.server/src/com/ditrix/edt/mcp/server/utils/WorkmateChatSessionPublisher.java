@@ -157,6 +157,16 @@ public final class WorkmateChatSessionPublisher
         }
     }
 
+    /**
+     * Reports whether the constant JShell bridge session is currently published in Workmate.
+     *
+     * @return {@code true} when published
+     */
+    public boolean isPublished()
+    {
+        return published.get();
+    }
+
     private static void logInfo(String message)
     {
         Log.info(message);

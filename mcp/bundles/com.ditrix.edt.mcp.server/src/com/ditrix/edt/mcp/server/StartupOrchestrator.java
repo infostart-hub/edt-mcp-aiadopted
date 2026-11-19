@@ -167,4 +167,14 @@ public class StartupOrchestrator
     {
         return groupService;
     }
+
+    /**
+     * Reports whether the 1C:Workmate JShell bridge session is currently published.
+     *
+     * @return {@code true} when published
+     */
+    public boolean isWorkmateBridgePublished()
+    {
+        return chatSessionPublisher.isPublished();
+    }
 }

@@ -160,6 +160,24 @@ public class GetServerStatusToolTest
         assertTrue(schema.contains("\"checksFolderConfigured\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"authEnabled\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"formRenderFlags\"")); //$NON-NLS-1$
+        assertTrue(schema.contains("\"workmate\"")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testWorkmateStatusBlockPresentAndNeverLeaksToken()
+    {
+        String json = new GetServerStatusTool().execute(java.util.Collections.emptyMap());
+        JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
+        assertTrue("workmate block must be present", obj.has("workmate")); //$NON-NLS-1$ //$NON-NLS-2$
+        JsonObject wm = obj.getAsJsonObject("workmate"); //$NON-NLS-1$
+        assertTrue(wm.has("installed")); //$NON-NLS-1$
+        assertTrue(wm.has("enabled")); //$NON-NLS-1$
+        assertTrue(wm.has("tokenConfigured")); //$NON-NLS-1$
+        assertTrue(wm.has("bridgeSessionReady")); //$NON-NLS-1$
+        assertTrue(wm.has("askWorkmateToolEnabled")); //$NON-NLS-1$
+        assertTrue(wm.has("status")); //$NON-NLS-1$
+        assertEquals("https://code.1c.ai/", wm.get("activationUrl").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(json.contains("clientToken")); //$NON-NLS-1$
     }
 
     @Test

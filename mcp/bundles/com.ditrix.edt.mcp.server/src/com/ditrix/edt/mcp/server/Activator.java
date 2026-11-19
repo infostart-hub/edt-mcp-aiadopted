@@ -149,6 +149,16 @@ public class Activator extends AbstractUIPlugin
     public HeadlessLifetime getHeadlessLifetime() { return headlessLifetime; }
 
     /**
+     * Reports whether the 1C:Workmate JShell bridge session is currently published.
+     *
+     * @return {@code true} when published
+     */
+    public boolean isWorkmateBridgePublished()
+    {
+        return orchestrator.isWorkmateBridgePublished();
+    }
+
+    /**
      * Publishes the stable in-process bridge.
      * <p>
      * Registered under three names: the interface's STRING name (for consumers that resolve it
